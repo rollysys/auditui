@@ -26,6 +26,12 @@
 
 - [ ] 父仓有 uncommitted 改动(server.py / web/index.html / AGENTS.md / tests/test_codex_rollout.py):收尾 commit 一次,打 tag `web-final` 封存,README 加一行指向 auditui
 
+## Usage / quota 显示(deferred)
+
+- [ ] **Codex weekly usage**(最易做): `~/.codex/sessions/**/*.jsonl` 最新一条 `token_count` event 的 `rate_limits.secondary` 就是 7 天窗口(`window_minutes=10080`),有 `used_percent` + `resets_at` + `plan_type`。Dashboard 或 Sessions 列表可以直接显示
+- [ ] **Claude quota**:session transcript **没有** rate_limits 字段;`stats-cache.json` 过时且无 token/cost;需要用 `~/.claude/.credentials.json` OAuth token 调 Anthropic API 才能拿真实 quota
+- [ ] **Qwen**:session 里只有 `contextWindowSize`(1M),没有 quota 概念,大概率不做
+
 ## 其他观察到的事
 
 - [ ] 全局 `~/.claude/CLAUDE.md` 太长,准备拆分:
