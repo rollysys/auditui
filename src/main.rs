@@ -98,7 +98,13 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    tui::run()
+    let refresh_secs: u64 = args
+        .iter()
+        .position(|a| a == "--refresh")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    tui::run(refresh_secs)
 }
 
 fn bench() -> Result<()> {

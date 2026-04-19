@@ -25,13 +25,16 @@ use ratatui::widgets::{
 use ratatui::Terminal;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
-const AUTO_REFRESH_SECS: u64 = 30;
+const DEFAULT_AUTO_REFRESH_SECS: u64 = 30;
+const MIN_AUTO_REFRESH_SECS: u64 = 5;
+const MAX_AUTO_REFRESH_SECS: u64 = 3600;
 
 const PREVIEW_CAP: usize = 32;
 const PREVIEW_DEBOUNCE_MS: u64 = 80;
@@ -148,7 +151,7 @@ impl PreviewCache {
     }
 }
 
-pub fn run() -> Result<()> {
+pub fn run(refresh_secs: u64) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -157,7 +160,7 @@ pub fn run() -> Result<()> {
 
     term.draw(|f| draw_splash(f, "Indexing sessions…", "Scanning ~/.claude, ~/.codex, ~/.qwen"))?;
 
-    let mut app = App::new();
+    let mut app = App::new(refresh_secs);
     let res = app.run(&mut term);
 
     disable_raw_mode()?;
@@ -268,6 +271,7 @@ struct App {
     skills_scroll: u16,
     groups_cache: Option<Vec<SessionGroup>>,
     expanded_groups: HashSet<String>,
+    refresh_secs: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -294,7 +298,7 @@ impl ListRow {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(initial_refresh_secs: u64) -> Self {
         let t0 = Instant::now();
         let sessions = session::index_all();
         let elapsed = t0.elapsed();
@@ -302,18 +306,37 @@ impl App {
         if !sessions.is_empty() {
             st.select(Some(0));
         }
+        let initial = if initial_refresh_secs == 0 {
+            0
+        } else {
+            initial_refresh_secs.clamp(MIN_AUTO_REFRESH_SECS, MAX_AUTO_REFRESH_SECS)
+        };
+        let refresh_secs = Arc::new(AtomicU64::new(initial));
         let status = format!(
-            "indexed {} sessions in {:.2}s · warming cache...",
+            "indexed {} sessions in {:.2}s · auto-refresh {} · warming cache...",
             sessions.len(),
-            elapsed.as_secs_f32()
+            elapsed.as_secs_f32(),
+            format_refresh(initial),
         );
         let cache = Arc::new(CacheStore::new());
         let (tx, rx) = mpsc::channel();
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(AUTO_REFRESH_SECS));
-            let list = session::index_all();
-            if tx.send(list).is_err() {
-                break;
+        let rs_clone = refresh_secs.clone();
+        thread::spawn(move || {
+            let mut last_fire = Instant::now();
+            loop {
+                thread::sleep(Duration::from_secs(1));
+                let target = rs_clone.load(Ordering::Relaxed);
+                if target == 0 {
+                    last_fire = Instant::now();
+                    continue;
+                }
+                if last_fire.elapsed().as_secs() >= target {
+                    let list = session::index_all();
+                    if tx.send(list).is_err() {
+                        break;
+                    }
+                    last_fire = Instant::now();
+                }
             }
         });
         let mut app = Self {
@@ -353,6 +376,7 @@ impl App {
             skills_scroll: 0,
             groups_cache: None,
             expanded_groups: HashSet::new(),
+            refresh_secs,
         };
         app.spawn_warm();
         app.request_preview_for_selected();
@@ -513,6 +537,35 @@ impl App {
             KeyCode::Char('p') | KeyCode::Char('P') => {
                 self.filter.exclude_scripted = !self.filter.exclude_scripted;
                 self.on_filter_changed();
+                return;
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                let cur = self.refresh_secs.load(Ordering::Relaxed);
+                let next = if cur == 0 {
+                    MIN_AUTO_REFRESH_SECS
+                } else {
+                    (cur * 2).min(MAX_AUTO_REFRESH_SECS)
+                };
+                self.refresh_secs.store(next, Ordering::Relaxed);
+                self.status = format!("auto-refresh: {}", format_refresh(next));
+                return;
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                let cur = self.refresh_secs.load(Ordering::Relaxed);
+                let next = if cur == 0 {
+                    0
+                } else if cur <= MIN_AUTO_REFRESH_SECS {
+                    0
+                } else {
+                    (cur / 2).max(MIN_AUTO_REFRESH_SECS)
+                };
+                self.refresh_secs.store(next, Ordering::Relaxed);
+                self.status = format!("auto-refresh: {}", format_refresh(next));
+                return;
+            }
+            KeyCode::Char('0') => {
+                self.refresh_secs.store(0, Ordering::Relaxed);
+                self.status = format!("auto-refresh: {}", format_refresh(0));
                 return;
             }
             KeyCode::Char('r') => {
@@ -2009,7 +2062,7 @@ impl App {
                 "↑/↓ scroll · PgUp/PgDn · [ ] prev/next in group · Tab list · Esc · S · q"
             }
             (View::Dashboard, _) => {
-                "← → range · u unit · v view · ↑/↓ scroll · S sessions · r · q"
+                "← → range · u unit · v view · ↑/↓ scroll · +/- refresh · S · r · q"
             }
             (View::Memory, Focus::List) => {
                 "↑/↓ move · Tab content · S sessions · q quit"
@@ -2030,6 +2083,18 @@ impl App {
             Span::raw(self.status.clone()),
         ]);
         f.render_widget(Paragraph::new(line), area);
+    }
+}
+
+fn format_refresh(secs: u64) -> String {
+    if secs == 0 {
+        "off".to_string()
+    } else if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h", secs / 3600)
     }
 }
 
@@ -2607,13 +2672,15 @@ fn draw_agent_bars(
             let (value, text) = match unit {
                 DashboardUnit::Dollars => (
                     (row.cost * 100.0).round().max(0.0) as u64,
-                    format!("${:.2}", row.cost),
+                    // pad to bar_width(8) so the bar's fg color doesn't
+                    // leak on either side of "$6.09"
+                    format!("{:^8}", format!("${:.2}", row.cost)),
                 ),
                 DashboardUnit::Calls => {
                     let per_hr = row.calls as f64 / hours;
                     (
                         (per_hr * 100.0).round().max(0.0) as u64,
-                        format!("{:.2}/h", per_hr),
+                        format!("{:^8}", format!("{:.1}/h", per_hr)),
                     )
                 }
             };
