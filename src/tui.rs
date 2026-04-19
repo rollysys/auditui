@@ -2652,6 +2652,7 @@ fn draw_agent_bars(
         .borders(Borders::ALL)
         .title(title)
         .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
     f.render_widget(Clear, area);
     if stats.by_agent.is_empty() {
         let p = Paragraph::new("no data").block(block);
@@ -2659,45 +2660,57 @@ fn draw_agent_bars(
         return;
     }
     let hours = hours.max(0.0001);
-    let bars: Vec<Bar> = stats
+
+    // Use horizontal bars (Paragraph + span rows) instead of BarChart.
+    // BarChart normalizes all bars to the tallest one, so when claude ≈ $6
+    // and codex / qwen ≈ $0.1, the smaller bars collapse to near-zero
+    // height and their text_value gets clipped entirely.
+    let bar_budget = inner.width.saturating_sub(22).max(5) as usize;
+    let max_v = stats
         .by_agent
         .iter()
-        .map(|(agent, row)| {
-            let color = match *agent {
-                "claude" => Color::Cyan,
-                "codex" => Color::Green,
-                "qwen" => Color::Blue,
-                _ => Color::White,
-            };
-            let (value, text) = match unit {
-                DashboardUnit::Dollars => (
-                    (row.cost * 100.0).round().max(0.0) as u64,
-                    // pad to bar_width(8) so the bar's fg color doesn't
-                    // leak on either side of "$6.09"
-                    format!("{:^8}", format!("${:.2}", row.cost)),
-                ),
-                DashboardUnit::Calls => {
-                    let per_hr = row.calls as f64 / hours;
-                    (
-                        (per_hr * 100.0).round().max(0.0) as u64,
-                        format!("{:^8}", format!("{:.1}/h", per_hr)),
-                    )
-                }
-            };
-            Bar::default()
-                .value(value)
-                .label(Line::from(*agent))
-                .text_value(text)
-                .style(Style::default().fg(color))
-                .value_style(Style::default().fg(Color::Black).bg(color))
+        .map(|(_, row)| match unit {
+            DashboardUnit::Dollars => row.cost,
+            DashboardUnit::Calls => row.calls as f64 / hours,
         })
-        .collect();
-    let chart = BarChart::default()
-        .block(block)
-        .data(BarGroup::default().bars(&bars))
-        .bar_width(8)
-        .bar_gap(2);
-    f.render_widget(chart, area);
+        .fold(0f64, f64::max)
+        .max(1e-9);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (agent, row) in &stats.by_agent {
+        let color = match *agent {
+            "claude" => Color::Cyan,
+            "codex" => Color::Green,
+            "qwen" => Color::Blue,
+            _ => Color::White,
+        };
+        let (v, text) = match unit {
+            DashboardUnit::Dollars => (row.cost, format!("${:.4}", row.cost)),
+            DashboardUnit::Calls => {
+                let per_hr = row.calls as f64 / hours;
+                (per_hr, format!("{:.2}/h", per_hr))
+            }
+        };
+        let bar_len = if v > 0.0 {
+            (((v / max_v) * bar_budget as f64).round() as usize).max(1)
+        } else {
+            0
+        };
+        let bar = "█".repeat(bar_len);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<7}", agent),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(bar, Style::default().fg(color)),
+            Span::raw(" "),
+            Span::styled(text, Style::default().fg(Color::Yellow)),
+        ]));
+    }
+
+    let para = Paragraph::new(lines).block(block);
+    f.render_widget(para, area);
 }
 
 fn draw_time_chart(
