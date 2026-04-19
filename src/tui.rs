@@ -1296,13 +1296,15 @@ impl App {
             return;
         }
         let s = dashboard::compute(&filtered, &self.cache, self.range);
+        let rs = self.refresh_secs.load(Ordering::Relaxed);
         self.status = format!(
-            "stats [{}]: {} sessions · ${:.2} · {} turns · {}ms · cache={}",
+            "stats [{}]: {} sessions · ${:.2} · {} turns · compute {}ms per {} · cache={}",
             s.range,
             s.total_sessions,
             s.total_cost,
             s.total_turns,
             s.elapsed_ms,
+            format_refresh(rs),
             self.cache.len()
         );
         self.stats = Some(s);
@@ -1379,6 +1381,17 @@ impl App {
             },
         ));
         spans.push(Span::styled(" [p]", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("  │  ", Style::default().fg(Color::DarkGray)));
+        let rs = self.refresh_secs.load(Ordering::Relaxed);
+        spans.push(Span::styled(
+            format!("auto:{}", format_refresh(rs)),
+            if rs == 0 {
+                Style::default().fg(Color::Rgb(180, 120, 120))
+            } else {
+                Style::default().fg(Color::Rgb(140, 180, 140))
+            },
+        ));
+        spans.push(Span::styled(" [+/-/0]", Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
