@@ -1958,7 +1958,7 @@ impl App {
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<20}", truncate(&cwd_short, 20)),
+                    fmt_col(&cwd_short, 20),
                     Style::default().fg(Color::Rgb(120, 170, 200)),
                 ),
                 Span::raw(" "),
@@ -1968,7 +1968,7 @@ impl App {
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<18}", truncate(&prompt, 16)),
+                    fmt_col(&prompt, 18),
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::raw(" "),
@@ -2401,6 +2401,42 @@ fn next_range(r: Range) -> Range {
     } else {
         all[idx + 1]
     }
+}
+
+/// Truncate + right-pad a string to exactly `target_cols` display columns,
+/// counting CJK / wide characters as 2. Needed because Rust's `{:<N}` pads by
+/// char count, which misaligns columns when content has non-ASCII runs.
+fn fmt_col(s: &str, target_cols: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::new();
+    let mut used = 0usize;
+    let mut truncated = false;
+    for c in s.chars() {
+        let w = c.width().unwrap_or(0);
+        // reserve one col for "…" if we know we'll need to truncate
+        if used + w > target_cols {
+            truncated = true;
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    if truncated && target_cols >= 1 {
+        // Back off until there's room for the "…" marker.
+        while used + 1 > target_cols {
+            if let Some(ch) = out.pop() {
+                used -= ch.width().unwrap_or(0);
+            } else {
+                break;
+            }
+        }
+        out.push('…');
+        used += 1;
+    }
+    if used < target_cols {
+        out.push_str(&" ".repeat(target_cols - used));
+    }
+    out
 }
 
 fn truncate(s: &str, n: usize) -> String {
