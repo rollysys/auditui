@@ -155,18 +155,18 @@ impl Renderer {
             Tag::Heading { level, .. } => {
                 self.blank_line();
                 self.heading_level = Some(level);
-                let color = match level {
-                    HeadingLevel::H1 => Color::Rgb(255, 210, 90),
-                    HeadingLevel::H2 => Color::Rgb(120, 200, 255),
-                    HeadingLevel::H3 => Color::Rgb(160, 220, 140),
-                    _ => Color::Rgb(180, 180, 180),
+                let (color, marker) = match level {
+                    HeadingLevel::H1 => (Color::Rgb(255, 210, 90), "█ "),
+                    HeadingLevel::H2 => (Color::Rgb(120, 200, 255), "▌ "),
+                    HeadingLevel::H3 => (Color::Rgb(160, 220, 140), "◆ "),
+                    HeadingLevel::H4 => (Color::Rgb(200, 170, 230), "▸ "),
+                    _ => (Color::Rgb(180, 180, 180), "· "),
                 };
-                self.push_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
-                let prefix = "#".repeat(level as usize) + " ";
                 self.cur.push(Span::styled(
-                    prefix,
-                    Style::default().fg(Color::DarkGray),
+                    marker.to_string(),
+                    Style::default().fg(color),
                 ));
+                self.push_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
             }
             Tag::BlockQuote(_) => {
                 self.flush_line();
@@ -261,10 +261,23 @@ impl Renderer {
                 self.flush_line();
                 self.lines.push(Line::from(""));
             }
-            TagEnd::Heading(_) => {
+            TagEnd::Heading(level) => {
                 self.pop_style();
-                self.heading_level = None;
+                let lvl = self.heading_level.take();
                 self.flush_line();
+                let _ = lvl;
+                let rule = match level {
+                    HeadingLevel::H1 => Some(('━', Color::Rgb(255, 210, 90))),
+                    HeadingLevel::H2 => Some(('─', Color::Rgb(120, 200, 255))),
+                    _ => None,
+                };
+                if let Some((ch, col)) = rule {
+                    let s: String = std::iter::repeat(ch).take(60).collect();
+                    self.lines.push(Line::from(Span::styled(
+                        s,
+                        Style::default().fg(col),
+                    )));
+                }
                 self.lines.push(Line::from(""));
             }
             TagEnd::BlockQuote(_) => {

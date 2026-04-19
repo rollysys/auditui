@@ -37,6 +37,19 @@ fn main() -> Result<()> {
     if args.iter().any(|a| a == "--bench") {
         return bench();
     }
+    if let Some(pos) = args.iter().position(|a| a == "--md-dump") {
+        let Some(path) = args.get(pos + 1) else {
+            eprintln!("usage: --md-dump <path>");
+            std::process::exit(2);
+        };
+        let text = std::fs::read_to_string(path)?;
+        let lines = md::to_lines(&text);
+        for (i, l) in lines.iter().enumerate() {
+            let flat: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            println!("{:3}: {}", i, flat);
+        }
+        return Ok(());
+    }
     if args.iter().any(|a| a == "--group-dump") {
         let sessions = session::index_all();
         let t = std::time::Instant::now();
