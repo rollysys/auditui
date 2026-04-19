@@ -2,14 +2,47 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+fn is_banner(level: HeadingLevel) -> bool {
+    matches!(level, HeadingLevel::H1 | HeadingLevel::H2)
+}
+
+fn heading_style(level: HeadingLevel) -> Style {
+    match level {
+        HeadingLevel::H1 => Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(255, 210, 90))
+            .add_modifier(Modifier::BOLD),
+        HeadingLevel::H2 => Style::default()
+            .fg(Color::Rgb(230, 240, 255))
+            .bg(Color::Rgb(50, 80, 120))
+            .add_modifier(Modifier::BOLD),
+        HeadingLevel::H3 => Style::default()
+            .fg(Color::Rgb(160, 220, 140))
+            .add_modifier(Modifier::BOLD),
+        HeadingLevel::H4 => Style::default()
+            .fg(Color::Rgb(200, 170, 230))
+            .add_modifier(Modifier::BOLD),
+        _ => Style::default()
+            .fg(Color::Rgb(180, 180, 180))
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
 pub fn to_lines(md: &str) -> Vec<Line<'static>> {
+    to_lines_width(md, 80)
+}
+
+pub fn to_lines_width(md: &str, width: usize) -> Vec<Line<'static>> {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_TASKLISTS);
     let parser = Parser::new_ext(md, opts);
 
-    let mut r = Renderer::default();
+    let mut r = Renderer {
+        target_width: width.max(20),
+        ..Default::default()
+    };
     for ev in parser {
         r.handle(ev);
     }
@@ -30,6 +63,7 @@ struct Renderer {
     list_stack: Vec<ListState>,
     blockquote_depth: usize,
     needs_item_bullet: Option<String>,
+    target_width: usize,
 }
 
 enum ListState {
@@ -155,18 +189,13 @@ impl Renderer {
             Tag::Heading { level, .. } => {
                 self.blank_line();
                 self.heading_level = Some(level);
-                let (color, marker) = match level {
-                    HeadingLevel::H1 => (Color::Rgb(255, 210, 90), "█ "),
-                    HeadingLevel::H2 => (Color::Rgb(120, 200, 255), "▌ "),
-                    HeadingLevel::H3 => (Color::Rgb(160, 220, 140), "◆ "),
-                    HeadingLevel::H4 => (Color::Rgb(200, 170, 230), "▸ "),
-                    _ => (Color::Rgb(180, 180, 180), "· "),
-                };
-                self.cur.push(Span::styled(
-                    marker.to_string(),
-                    Style::default().fg(color),
-                ));
-                self.push_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
+                let style = heading_style(level);
+                self.push_style(style);
+                // Banner levels: left-pad with a space in the same bg so the
+                // colored block starts at column 0.
+                if is_banner(level) {
+                    self.cur.push(Span::styled(" ".to_string(), style));
+                }
             }
             Tag::BlockQuote(_) => {
                 self.flush_line();
@@ -262,22 +291,17 @@ impl Renderer {
                 self.lines.push(Line::from(""));
             }
             TagEnd::Heading(level) => {
-                self.pop_style();
-                let lvl = self.heading_level.take();
-                self.flush_line();
-                let _ = lvl;
-                let rule = match level {
-                    HeadingLevel::H1 => Some(('━', Color::Rgb(255, 210, 90))),
-                    HeadingLevel::H2 => Some(('─', Color::Rgb(120, 200, 255))),
-                    _ => None,
-                };
-                if let Some((ch, col)) = rule {
-                    let s: String = std::iter::repeat(ch).take(60).collect();
-                    self.lines.push(Line::from(Span::styled(
-                        s,
-                        Style::default().fg(col),
-                    )));
+                if is_banner(level) {
+                    let style = self.styles.last().copied().unwrap_or_default();
+                    let used: usize = self.cur.iter().map(|s| s.width()).sum();
+                    let pad = self.target_width.saturating_sub(used);
+                    if pad > 0 {
+                        self.cur.push(Span::styled(" ".repeat(pad), style));
+                    }
                 }
+                self.pop_style();
+                self.heading_level = None;
+                self.flush_line();
                 self.lines.push(Line::from(""));
             }
             TagEnd::BlockQuote(_) => {

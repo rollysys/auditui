@@ -1610,7 +1610,12 @@ impl App {
             .as_ref()
             .map(|p| is_markdown_path(p))
             .unwrap_or(false);
-        let lines: Vec<Line> = if is_md { crate::md::to_lines(body) } else { plain_lines(body) };
+        let inner_w = block_detail.inner(cols[1]).width as usize;
+        let lines: Vec<Line> = if is_md {
+            crate::md::to_lines_width(body, inner_w)
+        } else {
+            plain_lines(body)
+        };
         let para = Paragraph::new(lines)
             .block(block_detail)
             .wrap(Wrap { trim: false })
@@ -1692,7 +1697,12 @@ impl App {
             .as_ref()
             .map(|p| is_markdown_path(p))
             .unwrap_or(false);
-        let lines: Vec<Line> = if is_md { crate::md::to_lines(body) } else { plain_lines(body) };
+        let inner_w = block_detail.inner(cols[1]).width as usize;
+        let lines: Vec<Line> = if is_md {
+            crate::md::to_lines_width(body, inner_w)
+        } else {
+            plain_lines(body)
+        };
         let para = Paragraph::new(lines)
             .block(block_detail)
             .wrap(Wrap { trim: false })
