@@ -56,6 +56,17 @@ make deploy-xserver     # rsync src + rebuild on xserver
 - `entrypoint=cli` → interactive (may include some `claude -p` we cannot distinguish without hooks)
 - `permissionMode=bypassPermissions` → soft scripted signal; use alongside entrypoint, not alone (interactive users sometimes run with `--dangerously-skip-permissions`)
 
+## Contribution flow
+
+For any change Claude (or any AI assistant) makes:
+
+1. **No direct push to `main`.** Cut a feature branch, e.g. `feat/...`, `fix/...`, `docs/...`, `release/...`.
+2. **Open a PR via `gh pr create --base main`.** The repo owner (`rollysys`) reviews and merges on GitHub. The merge commit attributes the change to the human reviewer, the branch commits keep AI-author + human-coauthor.
+3. **Keep the `Co-Authored-By: Claude <noreply@anthropic.com>` trailer.** Honest attribution of who actually wrote the diff. The repo owner remains the GitHub author of the merge.
+4. **One PR per coherent change.** Multiple thematic commits inside a PR are fine (and preferred over one giant commit), but mixing unrelated topics in one PR is not.
+
+Direct `git push origin main` is reserved for the repo owner only (e.g., emergency hotfix, repo-wide rename).
+
 ## Release
 
 Tag push triggers `.github/workflows/release.yml`:
