@@ -1,5 +1,8 @@
 # auditui
 
+[English](README.md) · [中文](README.zh.md)
+
+
 **Terminal UI for browsing Claude Code / Codex / Qwen coding-agent session logs.**
 
 Read-only. No hooks. No daemon. No network. Parses the transcript files your agent
@@ -63,6 +66,17 @@ thousands of them, across dozens of repos, and no good way to:
 - No analytics upload. Nothing leaves your machine.
 
 ## Install
+
+### Prebuilt binaries
+
+Download from the [GitHub Releases](https://github.com/rollysys/auditui/releases) page. Available targets:
+
+- `aarch64-apple-darwin` — macOS Apple Silicon (M1/M2/M3/M4)
+- `x86_64-unknown-linux-gnu` — Linux x86_64
+
+> **Intel Mac (x86_64-apple-darwin)**: build from source with the steps below — Intel runners on GitHub Actions are deprecated and prebuilt artifacts are no longer published.
+
+### From source
 
 ```bash
 git clone https://github.com/rollysys/auditui
