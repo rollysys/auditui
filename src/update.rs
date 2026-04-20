@@ -40,9 +40,16 @@ fn load_cache() -> Option<CacheEntry> {
 }
 
 fn save_cache(entry: &CacheEntry) {
+    // Write via tmp + rename so a crash mid-write never leaves the cache
+    // file half-written (next read would fail JSON parse and force a
+    // network roundtrip every launch).
     let Some(p) = cache_path() else { return };
-    if let Ok(s) = serde_json::to_string_pretty(entry) {
-        let _ = std::fs::write(&p, s);
+    let Ok(s) = serde_json::to_string_pretty(entry) else { return };
+    let tmp = p.with_extension("json.tmp");
+    if std::fs::write(&tmp, s).is_ok() {
+        let _ = std::fs::rename(&tmp, &p);
+    } else {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 

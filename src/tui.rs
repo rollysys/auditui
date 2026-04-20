@@ -156,10 +156,26 @@ impl PreviewCache {
     }
 }
 
+/// Drop-guard that restores the terminal to its pre-auditui state even if
+/// the inner app panics. Without this, a panic below `enable_raw_mode`
+/// leaves the user's terminal stuck in raw + alternate-screen mode
+/// (blind-typed `reset` is the only recovery).
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+}
+
 pub fn run(refresh_secs: u64, update_state: crate::update::UpdateState) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    // From here until `_guard` drops, terminal state is always cleaned up.
+    let _guard = TerminalGuard;
+
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
@@ -168,8 +184,6 @@ pub fn run(refresh_secs: u64, update_state: crate::update::UpdateState) -> Resul
     let mut app = App::new(refresh_secs, update_state);
     let res = app.run(&mut term);
 
-    disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen)?;
     term.show_cursor().ok();
     res
 }
@@ -1298,7 +1312,23 @@ impl App {
             self.search.last_status = "type to search".to_string();
             return;
         }
-        let ql = q.to_lowercase();
+        // Use regex with the case-insensitive flag to search the original
+        // body bytes. The earlier `body.to_lowercase()` + `find(&ql)` path
+        // returned byte offsets in the LOWERCASED string, which diverge
+        // from the original string when `to_lowercase()` changes length
+        // (ß → ss, İ → i̇, etc.). Those offsets were then fed into
+        // make_snippet against the original body, producing wrong high-
+        // lights and a latent char-boundary panic risk.
+        let re = match regex::RegexBuilder::new(&regex::escape(&q))
+            .case_insensitive(true)
+            .build()
+        {
+            Ok(r) => r,
+            Err(_) => {
+                self.search.last_status = "invalid query".to_string();
+                return;
+            }
+        };
         let sessions = self.sessions.clone();
         let cache = self.search_cache.clone();
         let t0 = Instant::now();
@@ -1312,9 +1342,8 @@ impl App {
                 };
                 let mut out: Vec<Hit> = Vec::new();
                 for (i, ev) in events.iter().enumerate() {
-                    let body_l = ev.body.to_lowercase();
-                    if let Some(pos_b) = body_l.find(&ql) {
-                        let snip = make_snippet(&ev.body, pos_b, ql.len());
+                    if let Some(m) = re.find(&ev.body) {
+                        let snip = make_snippet(&ev.body, m.start(), m.end() - m.start());
                         out.push(Hit {
                             sid: s.id.clone(),
                             event_index: i,
@@ -1723,8 +1752,15 @@ impl App {
         // was unreachable by ↓/PgDn).
         self.detail_row_count = content.len().min(u16::MAX as usize) as u16;
 
+        // `.wrap(Wrap { trim: false })`: md::to_lines_width emits paragraph
+        // text as one long Line (pulldown-cmark's SoftBreak collapses source
+        // newlines into spaces). Without ratatui-side wrap the right edge
+        // of any long user/assistant paragraph gets silently clipped. Code
+        // blocks and tool-result bodies are already manually wrapped via
+        // wrap_to_width, so they pass through unchanged.
         let para = Paragraph::new(content)
             .block(block)
+            .wrap(Wrap { trim: false })
             .scroll((self.scroll, 0));
         f.render_widget(para, area);
     }
@@ -2601,7 +2637,11 @@ fn render_tool_use(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: us
 fn render_tool_result(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: usize) {
     let mut body = ev.body.as_str();
     let mut exit_code: Option<i64> = None;
-    if let Some(rest) = body.strip_prefix("exit=") {
+    // Only codex's exec_command_end events carry an exit code, and they
+    // tag the body with a Record-Separator prefix (\u{1e}) so we don't
+    // misparse a generic tool_result whose body happens to start with
+    // "exit=0\n…" (which can and does occur in real shell output).
+    if let Some(rest) = body.strip_prefix("\u{1e}exit=") {
         if let Some(nl) = rest.find('\n') {
             if let Ok(n) = rest[..nl].parse::<i64>() {
                 exit_code = Some(n);
