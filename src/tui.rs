@@ -2771,23 +2771,39 @@ fn draw_time_chart(
     // Multi-agent: render one mini-chart per agent in a vertical stack, each
     // with its own Y-axis (so small-magnitude agents like qwen remain
     // readable). Shared X-axis bounds; X tick labels only on the bottom strip.
-    if stats.by_time_agent.len() >= 2 {
-        // Sort agents by peak descending so the biggest is first (most salient),
-        // smallest at the bottom (right next to shared X-axis labels).
-        let mut agents: Vec<Agent> = stats.by_time_agent.keys().copied().collect();
-        agents.sort_by(|a, b| {
-            let pa = stats
+    //
+    // Pick the series set that matches the current unit — the two maps are
+    // filtered independently in dashboard::compute(), so in Calls mode an
+    // agent without any LLM-call buckets should not appear as an empty strip,
+    // and a calls-only agent (cost=0, e.g. local-model session) should still
+    // appear.
+    let peak_for = |a: &Agent| -> f64 {
+        match unit {
+            DashboardUnit::Dollars => stats
                 .by_time_agent
                 .get(a)
                 .map(|v| v.iter().cloned().fold(0f64, f64::max))
-                .unwrap_or(0.0);
-            let pb = stats
-                .by_time_agent
-                .get(b)
-                .map(|v| v.iter().cloned().fold(0f64, f64::max))
-                .unwrap_or(0.0);
-            pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(0.0),
+            DashboardUnit::Calls => stats
+                .by_time_agent_calls
+                .get(a)
+                .map(|v| v.iter().cloned().fold(0u64, u64::max) as f64 / bucket_hours)
+                .unwrap_or(0.0),
+        }
+    };
+    let mut active_agents: Vec<Agent> = match unit {
+        DashboardUnit::Dollars => stats.by_time_agent.keys().copied().collect(),
+        DashboardUnit::Calls => stats.by_time_agent_calls.keys().copied().collect(),
+    };
+    if active_agents.len() >= 2 {
+        // Sort agents by peak descending so the biggest is first (most salient),
+        // smallest at the bottom (right next to shared X-axis labels).
+        active_agents.sort_by(|a, b| {
+            peak_for(b)
+                .partial_cmp(&peak_for(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
+        let agents = active_agents;
         // Unify Y-axis label width across all mini-charts. Without this,
         // panels with bigger peaks ("120.30" — 6 chars) reserve a wider
         // left gutter than panels with small peaks ("0.01" — 4 chars), so
@@ -2796,26 +2812,7 @@ fn draw_time_chart(
         // the data columns above.
         let y_label_width = agents
             .iter()
-            .map(|a| {
-                let peak = match unit {
-                    DashboardUnit::Dollars => stats
-                        .by_time_agent
-                        .get(a)
-                        .map(|v| v.iter().cloned().fold(0f64, f64::max))
-                        .unwrap_or(0.0),
-                    DashboardUnit::Calls => stats
-                        .by_time_agent_calls
-                        .get(a)
-                        .map(|v| {
-                            v.iter()
-                                .cloned()
-                                .fold(0u64, u64::max) as f64
-                                / bucket_hours
-                        })
-                        .unwrap_or(0.0),
-                };
-                format!("{:.2}", peak.max(0.0001)).len()
-            })
+            .map(|a| format!("{:.2}", peak_for(a).max(0.0001)).len())
             .max()
             .unwrap_or(4);
         let n = agents.len() as u32;
@@ -2968,7 +2965,6 @@ fn draw_agent_strip(
     } else {
         Vec::new()
     };
-    let _ = x_max;
     // Force Right alignment: with the default Center alignment ratatui
     // reserves half the first X label's width in the left gutter (see
     // ratatui Chart::max_width_of_labels_left_of_y_axis). On the bottom
