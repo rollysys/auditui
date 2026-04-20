@@ -1684,30 +1684,26 @@ impl App {
             None => &empty_overrides,
         };
         let content: Vec<Line> = if let Some(events) = cur_t.as_ref() {
-            // Apply pending jump: if its sid matches the loaded transcript, set scroll.
+            // Single pass: render_detail produces both the Line buffer and
+            // the per-event row offsets matching the squashed layout. Same
+            // offsets vec serves pending-jump resolution and the cache the
+            // `x` handler consults, so we never re-render twice per frame.
+            let (rendered, offsets) = render_detail(
+                events.as_ref(),
+                inner_width,
+                self.fold_mode,
+                overrides_ref,
+            );
             if let Some((pj_sid, pj_idx)) = self.pending_jump.clone() {
                 if Some(&pj_sid) == self.transcript_for.as_ref() {
-                    let offsets = event_row_offsets(
-                        events.as_ref(),
-                        inner_width,
-                        self.fold_mode,
-                        overrides_ref,
-                    );
                     if let Some(row) = offsets.get(pj_idx).copied() {
                         self.scroll = row;
                     }
                     self.pending_jump = None;
                 }
             }
-            // Cache per-event row offsets so `x` (toggle fold at cursor) can
-            // locate the event under self.scroll without re-rendering.
-            self.detail_event_offsets = event_row_offsets(
-                events.as_ref(),
-                inner_width,
-                self.fold_mode,
-                overrides_ref,
-            );
-            render_events(events.as_ref(), inner_width, self.fold_mode, overrides_ref)
+            self.detail_event_offsets = offsets;
+            rendered
         } else if self.pending_preview.is_some() {
             vec![Line::from(Span::styled(
                 "previewing…",
@@ -2375,30 +2371,64 @@ fn folded_placeholder(ev: &TranscriptEvent, rows: usize) -> Line<'static> {
     ])
 }
 
-fn render_events(
+fn line_is_blank(l: &Line<'_>) -> bool {
+    l.spans
+        .iter()
+        .all(|s| s.content.chars().all(|c| c.is_whitespace()))
+}
+
+/// Render events and compute each event's starting row in a single pass.
+///
+/// The "single pass" matters because consecutive blank lines are squashed
+/// to at most one — without that, a chat with markdown paragraph breaks
+/// or user prompts containing `\n\n\n` feels very empty. Doing render and
+/// row-offset calc together means the offsets reflect the final (squashed)
+/// layout instead of having to replay the same logic twice.
+fn render_detail(
     events: &[TranscriptEvent],
     inner_width: u16,
     fold_mode: FoldMode,
     overrides: &HashSet<usize>,
-) -> Vec<Line<'static>> {
-    let mut out: Vec<Line<'static>> = Vec::with_capacity(events.len() * 4);
+) -> (Vec<Line<'static>>, Vec<u16>) {
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(events.len() * 4);
+    let mut offsets: Vec<u16> = Vec::with_capacity(events.len());
     let w = inner_width.max(1) as usize;
+    let mut prev_blank = false;
+
     for (i, ev) in events.iter().enumerate() {
+        offsets.push(lines.len().min(u16::MAX as usize) as u16);
+
         let buf = render_one_event(ev, w);
         let foldable = is_foldable(ev.kind, buf.len());
         let should_fold = match fold_mode {
             FoldMode::Expanded => false,
             FoldMode::Smart => foldable && !overrides.contains(&i),
         };
-        if should_fold {
-            out.push(folded_placeholder(ev, buf.len()));
+        let event_lines: Vec<Line<'static>> = if should_fold {
+            vec![folded_placeholder(ev, buf.len())]
         } else {
-            out.extend(buf);
+            buf
+        };
+
+        for line in event_lines {
+            let is_blank = line_is_blank(&line);
+            if is_blank && prev_blank {
+                continue; // squash consecutive blanks
+            }
+            prev_blank = is_blank;
+            lines.push(line);
         }
-        out.push(Line::from(""));
+
+        // One blank between events — squashed if the event already ended
+        // on a blank line.
+        if !prev_blank {
+            lines.push(Line::from(""));
+            prev_blank = true;
+        }
     }
-    out
+    (lines, offsets)
 }
+
 
 fn display_width(s: &str) -> usize {
     s.chars()
@@ -2803,31 +2833,6 @@ fn make_snippet(body: &str, match_byte_pos: usize, q_len_bytes: usize) -> Snippe
     }
 }
 
-// Line index (in the wrapped render output) where each event starts.
-// Takes the same fold context so the offsets line up with what render_events
-// actually produced (a collapsed event is 1 row instead of its full height).
-fn event_row_offsets(
-    events: &[TranscriptEvent],
-    inner_width: u16,
-    fold_mode: FoldMode,
-    overrides: &HashSet<usize>,
-) -> Vec<u16> {
-    let mut offsets = Vec::with_capacity(events.len());
-    let mut row: u16 = 0;
-    let w = inner_width.max(1) as usize;
-    for (i, ev) in events.iter().enumerate() {
-        offsets.push(row);
-        let buf = render_one_event(ev, w);
-        let folded = match fold_mode {
-            FoldMode::Expanded => false,
-            FoldMode::Smart => is_foldable(ev.kind, buf.len()) && !overrides.contains(&i),
-        };
-        // +1 for the trailing blank line that render_events appends per event.
-        let height = if folded { 1 } else { buf.len() } + 1;
-        row = row.saturating_add(height as u16);
-    }
-    offsets
-}
 
 fn draw_agent_bars(
     f: &mut ratatui::Frame,
