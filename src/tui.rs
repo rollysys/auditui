@@ -150,6 +150,10 @@ impl PreviewCache {
         self.order.push_back(sid.clone());
         self.map.insert(sid, data);
     }
+    fn invalidate(&mut self, sid: &str) {
+        self.map.remove(sid);
+        self.order.retain(|s| s != sid);
+    }
 }
 
 pub fn run(refresh_secs: u64, update_state: crate::update::UpdateState) -> Result<()> {
@@ -418,6 +422,17 @@ impl App {
         self.list_state.select(Some(new_idx));
         if self.view == View::Dashboard {
             self.load_stats_if_needed();
+        }
+        // Invalidate + reload the transcript currently displayed in the detail
+        // pane: auto-refresh only replaced session meta, so without this step
+        // an actively-growing .jsonl keeps showing its stale preview from
+        // before the refresh. load_preview goes through the size-keyed
+        // timeline cache so unchanged sessions are cheap (hash lookup) and
+        // grown ones re-parse exactly once. Scroll position is deliberately
+        // preserved (auto-refresh should not yank the user's reading position).
+        if let Some(sid) = self.transcript_for.clone() {
+            self.preview.invalidate(&sid);
+            self.load_preview(&sid);
         }
     }
 
