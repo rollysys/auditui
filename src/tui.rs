@@ -14,7 +14,7 @@ use crossterm::terminal::{
 };
 use rayon::prelude::*;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::symbols;
@@ -2969,9 +2969,15 @@ fn draw_agent_strip(
         Vec::new()
     };
     let _ = x_max;
+    // Force Right alignment: with the default Center alignment ratatui
+    // reserves half the first X label's width in the left gutter (see
+    // ratatui Chart::max_width_of_labels_left_of_y_axis). On the bottom
+    // panel (which has X labels) that would widen the left gutter by
+    // ~5-6 chars and break vertical alignment with the panels above.
     let x_axis = Axis::default()
         .style(Style::default().fg(Color::DarkGray))
         .bounds([0.0, x_max])
+        .labels_alignment(Alignment::Right)
         .labels(x_labels);
     let w = y_label_width.max(1);
     let y_axis = Axis::default()
