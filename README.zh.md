@@ -126,6 +126,8 @@ TUI 启动后会在后台线程去拉 GitHub `releases/latest`,每 24h 最多一
 | sessions | `[` / `]` | 同组内上一个/下一个 session |
 | sessions | `Tab` | 列表与详情之间切换焦点 |
 | sessions | `/` | 全文搜索 transcripts |
+| sessions | `z` | 切换折叠模式:smart(默认,长 tool_result / system / thinking 折叠)↔ 全展开 |
+| sessions | `x` | smart 模式下,切换光标所在 event 的折叠状态 |
 | dashboard | `←` / `→` | 切换时间范围 |
 | dashboard | `u` | 切换单位:`$` ↔ `calls/hr` |
 | dashboard | `v` | 总览 ↔ 分组柱状图 |

@@ -227,6 +227,16 @@ enum DashboardMode {
     Sessions,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FoldMode {
+    /// Default: long tool_result / system / thinking are collapsed to a
+    /// single placeholder line; user / assistant / tool_use headers are
+    /// always shown.
+    Smart,
+    /// Nothing is folded regardless of length or kind.
+    Expanded,
+}
+
 #[derive(Clone)]
 struct MemoryRow {
     label: String,
@@ -282,6 +292,16 @@ struct App {
     /// draw_detail, read by move_scroll to clamp scroll to a correct upper
     /// bound. Zero before the first render.
     detail_row_count: u16,
+    /// Global fold state for the transcript detail pane.
+    fold_mode: FoldMode,
+    /// Per-session "explicitly-expanded" event indices. Persists across
+    /// session switches so flipping back to a session preserves your
+    /// per-event choices. Only consulted in FoldMode::Smart.
+    fold_overrides: HashMap<String, HashSet<usize>>,
+    /// Event-start row offsets from the last draw_detail pass, matched to
+    /// the current transcript. Written by draw_detail, read by handle_key
+    /// when the user presses `x` to toggle fold of the event under scroll.
+    detail_event_offsets: Vec<u16>,
 }
 
 #[derive(Clone)]
@@ -389,6 +409,9 @@ impl App {
             refresh_secs,
             update_state,
             detail_row_count: 0,
+            fold_mode: FoldMode::Smart,
+            fold_overrides: HashMap::new(),
+            detail_event_offsets: Vec::new(),
         };
         app.spawn_warm();
         app.request_preview_for_selected();
@@ -670,6 +693,15 @@ impl App {
                 Focus::List => self.move_list(code),
                 Focus::Detail => self.move_scroll(code),
             },
+            KeyCode::Char('z') | KeyCode::Char('Z') => {
+                self.fold_mode = match self.fold_mode {
+                    FoldMode::Smart => FoldMode::Expanded,
+                    FoldMode::Expanded => FoldMode::Smart,
+                };
+            }
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                self.toggle_fold_at_scroll();
+            }
             KeyCode::Enter => {
                 if matches!(self.focus, Focus::List) {
                     let is_header = matches!(
@@ -1003,6 +1035,27 @@ impl App {
         if next != cur {
             self.list_state.select(Some(next));
             self.request_preview_for_selected();
+        }
+    }
+
+    /// Toggle the fold override for the event containing the current scroll
+    /// top. No-op if no transcript is loaded or the scroll isn't inside any
+    /// event. Works in both Smart and Expanded modes; in Expanded mode the
+    /// override has no visible effect until the user returns to Smart.
+    fn toggle_fold_at_scroll(&mut self) {
+        let Some(sid) = self.transcript_for.clone() else { return };
+        if self.detail_event_offsets.is_empty() {
+            return;
+        }
+        let scroll = self.scroll;
+        let ev_idx = self
+            .detail_event_offsets
+            .iter()
+            .rposition(|&o| o <= scroll)
+            .unwrap_or(0);
+        let set = self.fold_overrides.entry(sid).or_default();
+        if !set.insert(ev_idx) {
+            set.remove(&ev_idx);
         }
     }
 
@@ -1625,18 +1678,36 @@ impl App {
 
         let inner_width = block.inner(area).width;
         let cur_t = self.current_transcript();
+        let empty_overrides: HashSet<usize> = HashSet::new();
+        let overrides_ref: &HashSet<usize> = match self.transcript_for.as_ref() {
+            Some(sid) => self.fold_overrides.get(sid).unwrap_or(&empty_overrides),
+            None => &empty_overrides,
+        };
         let content: Vec<Line> = if let Some(events) = cur_t.as_ref() {
             // Apply pending jump: if its sid matches the loaded transcript, set scroll.
             if let Some((pj_sid, pj_idx)) = self.pending_jump.clone() {
                 if Some(&pj_sid) == self.transcript_for.as_ref() {
-                    let offsets = event_row_offsets(events.as_ref(), inner_width);
+                    let offsets = event_row_offsets(
+                        events.as_ref(),
+                        inner_width,
+                        self.fold_mode,
+                        overrides_ref,
+                    );
                     if let Some(row) = offsets.get(pj_idx).copied() {
                         self.scroll = row;
                     }
                     self.pending_jump = None;
                 }
             }
-            render_events(events.as_ref(), inner_width)
+            // Cache per-event row offsets so `x` (toggle fold at cursor) can
+            // locate the event under self.scroll without re-rendering.
+            self.detail_event_offsets = event_row_offsets(
+                events.as_ref(),
+                inner_width,
+                self.fold_mode,
+                overrides_ref,
+            );
+            render_events(events.as_ref(), inner_width, self.fold_mode, overrides_ref)
         } else if self.pending_preview.is_some() {
             vec![Line::from(Span::styled(
                 "previewing…",
@@ -2259,17 +2330,70 @@ fn format_ts(unix: u64) -> String {
     dt.format("%m-%d %H:%M").to_string()
 }
 
-fn render_events(events: &[TranscriptEvent], inner_width: u16) -> Vec<Line<'static>> {
+/// Minimum rendered rows before tool_result / system / thinking events are
+/// collapsed to a single placeholder in Smart fold mode. Short bodies stay
+/// inline — folding them would add chrome without saving screen space.
+const FOLD_THRESHOLD_ROWS: usize = 10;
+
+fn render_one_event(ev: &TranscriptEvent, w: usize) -> Vec<Line<'static>> {
+    let mut buf = Vec::new();
+    match ev.kind {
+        TranscriptKind::User => render_user(ev, &mut buf, w),
+        TranscriptKind::Assistant => render_assistant(ev, &mut buf, w),
+        TranscriptKind::Thinking => render_thinking(ev, &mut buf, w),
+        TranscriptKind::ToolUse => render_tool_use(ev, &mut buf, w),
+        TranscriptKind::ToolResult => render_tool_result(ev, &mut buf, w),
+        TranscriptKind::System => render_system(ev, &mut buf, w),
+    }
+    buf
+}
+
+fn is_foldable(kind: TranscriptKind, rendered_rows: usize) -> bool {
+    matches!(
+        kind,
+        TranscriptKind::ToolResult | TranscriptKind::System | TranscriptKind::Thinking
+    ) && rendered_rows > FOLD_THRESHOLD_ROWS
+}
+
+fn folded_placeholder(ev: &TranscriptEvent, rows: usize) -> Line<'static> {
+    let (tag, color) = match ev.kind {
+        TranscriptKind::ToolResult => ("TOOL←", Color::LightGreen),
+        TranscriptKind::System => ("SYS", Color::Gray),
+        TranscriptKind::Thinking => ("THINK", Color::Magenta),
+        _ => ("EVENT", Color::White),
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("▌{:<5} ", tag),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(short_time(&ev.ts), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("  · {} lines folded  [+ x]", rows),
+            Style::default().fg(Color::Rgb(140, 140, 160)),
+        ),
+    ])
+}
+
+fn render_events(
+    events: &[TranscriptEvent],
+    inner_width: u16,
+    fold_mode: FoldMode,
+    overrides: &HashSet<usize>,
+) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::with_capacity(events.len() * 4);
     let w = inner_width.max(1) as usize;
-    for ev in events {
-        match ev.kind {
-            TranscriptKind::User => render_user(ev, &mut out, w),
-            TranscriptKind::Assistant => render_assistant(ev, &mut out, w),
-            TranscriptKind::Thinking => render_thinking(ev, &mut out, w),
-            TranscriptKind::ToolUse => render_tool_use(ev, &mut out, w),
-            TranscriptKind::ToolResult => render_tool_result(ev, &mut out, w),
-            TranscriptKind::System => render_system(ev, &mut out, w),
+    for (i, ev) in events.iter().enumerate() {
+        let buf = render_one_event(ev, w);
+        let foldable = is_foldable(ev.kind, buf.len());
+        let should_fold = match fold_mode {
+            FoldMode::Expanded => false,
+            FoldMode::Smart => foldable && !overrides.contains(&i),
+        };
+        if should_fold {
+            out.push(folded_placeholder(ev, buf.len()));
+        } else {
+            out.extend(buf);
         }
         out.push(Line::from(""));
     }
@@ -2680,13 +2804,27 @@ fn make_snippet(body: &str, match_byte_pos: usize, q_len_bytes: usize) -> Snippe
 }
 
 // Line index (in the wrapped render output) where each event starts.
-fn event_row_offsets(events: &[TranscriptEvent], inner_width: u16) -> Vec<u16> {
+// Takes the same fold context so the offsets line up with what render_events
+// actually produced (a collapsed event is 1 row instead of its full height).
+fn event_row_offsets(
+    events: &[TranscriptEvent],
+    inner_width: u16,
+    fold_mode: FoldMode,
+    overrides: &HashSet<usize>,
+) -> Vec<u16> {
     let mut offsets = Vec::with_capacity(events.len());
     let mut row: u16 = 0;
-    for ev in events {
+    let w = inner_width.max(1) as usize;
+    for (i, ev) in events.iter().enumerate() {
         offsets.push(row);
-        let lines = render_events(std::slice::from_ref(ev), inner_width);
-        row = row.saturating_add(lines.len() as u16);
+        let buf = render_one_event(ev, w);
+        let folded = match fold_mode {
+            FoldMode::Expanded => false,
+            FoldMode::Smart => is_foldable(ev.kind, buf.len()) && !overrides.contains(&i),
+        };
+        // +1 for the trailing blank line that render_events appends per event.
+        let height = if folded { 1 } else { buf.len() } + 1;
+        row = row.saturating_add(height as u16);
     }
     offsets
 }
