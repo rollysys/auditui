@@ -2737,22 +2737,76 @@ fn draw_time_chart(
         DashboardUnit::Dollars => "$",
         DashboardUnit::Calls => "calls/hr",
     };
-    let block = Block::default()
+    let outer_title_multi = if stats.by_time_agent.len() >= 2 {
+        " · per-agent"
+    } else {
+        ""
+    };
+    let outer_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(
-            " {} over time · bucket={} ",
+            " {} over time · bucket={}{} ",
             title_unit,
-            humanize_secs(stats.bucket_seconds)
+            humanize_secs(stats.bucket_seconds),
+            outer_title_multi,
         ))
         .border_style(Style::default().fg(Color::DarkGray));
     f.render_widget(Clear, area);
     if stats.by_time.is_empty() {
-        let p = Paragraph::new("no data").block(block);
+        let p = Paragraph::new("no data").block(outer_block);
         f.render_widget(p, area);
         return;
     }
+    let inner = outer_block.inner(area);
+    f.render_widget(outer_block, area);
+
     let bucket_hours = (stats.bucket_seconds as f64 / 3600.0).max(0.0001);
     let _ = hours;
+
+    let first_ts = stats.by_time.first().map(|(t, _)| *t).unwrap_or(0);
+    let last_ts = stats.by_time.last().map(|(t, _)| *t).unwrap_or(0);
+    let mid_ts = first_ts + (last_ts - first_ts) / 2;
+    let x_max = (stats.by_time.len() as f64 - 1.0).max(1.0);
+
+    // Multi-agent: render one mini-chart per agent in a vertical stack, each
+    // with its own Y-axis (so small-magnitude agents like qwen remain
+    // readable). Shared X-axis bounds; X tick labels only on the bottom strip.
+    if stats.by_time_agent.len() >= 2 {
+        // Sort agents by peak descending so the biggest is first (most salient),
+        // smallest at the bottom (right next to shared X-axis labels).
+        let mut agents: Vec<Agent> = stats.by_time_agent.keys().copied().collect();
+        agents.sort_by(|a, b| {
+            let pa = stats
+                .by_time_agent
+                .get(a)
+                .map(|v| v.iter().cloned().fold(0f64, f64::max))
+                .unwrap_or(0.0);
+            let pb = stats
+                .by_time_agent
+                .get(b)
+                .map(|v| v.iter().cloned().fold(0f64, f64::max))
+                .unwrap_or(0.0);
+            pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let n = agents.len() as u32;
+        let constraints: Vec<Constraint> =
+            (0..n).map(|_| Constraint::Ratio(1, n)).collect();
+        let strips = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(inner);
+        for (i, agent) in agents.iter().enumerate() {
+            let strip = strips[i];
+            let is_last = i + 1 == agents.len();
+            draw_agent_strip(
+                f, strip, *agent, stats, unit, bucket_hours, x_max, first_ts, mid_ts,
+                last_ts, is_last,
+            );
+        }
+        return;
+    }
+
+    // Single aggregate line (original behavior, no inner block).
     let agg_points: Vec<(f64, f64)> = match unit {
         DashboardUnit::Dollars => stats
             .by_time
@@ -2767,77 +2821,16 @@ fn draw_time_chart(
             .map(|(i, (_, c))| (i as f64, *c as f64 / bucket_hours))
             .collect(),
     };
-    // Show per-agent lines only when at least 2 agents have non-zero data
-    // in the current window — otherwise fall back to a single aggregate line.
-    let show_multi = stats.by_time_agent.len() >= 2;
-    let per_agent_points: Vec<(Agent, Vec<(f64, f64)>)> = if show_multi {
-        stats
-            .by_time_agent
-            .iter()
-            .map(|(a, cost_vec)| {
-                let pts: Vec<(f64, f64)> = match unit {
-                    DashboardUnit::Dollars => cost_vec
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| (i as f64, *v))
-                        .collect(),
-                    DashboardUnit::Calls => {
-                        let calls_vec = stats
-                            .by_time_agent_calls
-                            .get(a)
-                            .cloned()
-                            .unwrap_or_default();
-                        calls_vec
-                            .iter()
-                            .enumerate()
-                            .map(|(i, c)| (i as f64, *c as f64 / bucket_hours))
-                            .collect()
-                    }
-                };
-                (*a, pts)
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let x_max = (agg_points.len() as f64 - 1.0).max(1.0);
-    let y_max = if show_multi {
-        per_agent_points
-            .iter()
-            .flat_map(|(_, pts)| pts.iter().map(|(_, v)| *v))
-            .fold(0.0f64, f64::max)
-            .max(0.0001)
-    } else {
-        agg_points
-            .iter()
-            .map(|(_, v)| *v)
-            .fold(0.0f64, f64::max)
-            .max(0.0001)
-    };
-
-    let datasets: Vec<Dataset> = if show_multi {
-        per_agent_points
-            .iter()
-            .map(|(a, pts)| {
-                Dataset::default()
-                    .name(agent_short(*a))
-                    .marker(symbols::Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(agent_color(*a)))
-                    .data(pts)
-            })
-            .collect()
-    } else {
-        vec![Dataset::default()
-            .marker(symbols::Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::Yellow))
-            .data(&agg_points)]
-    };
-
-    let first_ts = stats.by_time.first().map(|(t, _)| *t).unwrap_or(0);
-    let last_ts = stats.by_time.last().map(|(t, _)| *t).unwrap_or(0);
-    let mid_ts = first_ts + (last_ts - first_ts) / 2;
+    let y_max = agg_points
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(0.0f64, f64::max)
+        .max(0.0001);
+    let datasets = vec![Dataset::default()
+        .marker(symbols::Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::default().fg(Color::Yellow))
+        .data(&agg_points)];
 
     let x_axis = Axis::default()
         .style(Style::default().fg(Color::DarkGray))
@@ -2864,7 +2857,100 @@ fn draw_time_chart(
         .bounds([0.0, y_max * 1.1])
         .labels(vec![Span::raw(y0), Span::raw(ymid), Span::raw(ytop)]);
 
-    let chart = Chart::new(datasets).block(block).x_axis(x_axis).y_axis(y_axis);
+    let chart = Chart::new(datasets).x_axis(x_axis).y_axis(y_axis);
+    f.render_widget(chart, inner);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_agent_strip(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    agent: Agent,
+    stats: &Stats,
+    unit: DashboardUnit,
+    bucket_hours: f64,
+    x_max: f64,
+    first_ts: u64,
+    mid_ts: u64,
+    last_ts: u64,
+    is_last: bool,
+) {
+    let color = agent_color(agent);
+    let points: Vec<(f64, f64)> = match unit {
+        DashboardUnit::Dollars => stats
+            .by_time_agent
+            .get(&agent)
+            .map(|v| {
+                v.iter()
+                    .enumerate()
+                    .map(|(i, cost)| (i as f64, *cost))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        DashboardUnit::Calls => stats
+            .by_time_agent_calls
+            .get(&agent)
+            .map(|v| {
+                v.iter()
+                    .enumerate()
+                    .map(|(i, c)| (i as f64, *c as f64 / bucket_hours))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let peak = points
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(0.0f64, f64::max)
+        .max(0.0001);
+    let peak_label = match unit {
+        DashboardUnit::Dollars => format!("${:.4}", peak),
+        DashboardUnit::Calls => format!("{:.2}/h", peak),
+    };
+    let title_line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            agent_short(agent),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" · "),
+        Span::styled(peak_label, Style::default().fg(Color::Yellow)),
+        Span::raw(" "),
+    ]);
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .title(title_line)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let datasets = vec![Dataset::default()
+        .marker(symbols::Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::default().fg(color))
+        .data(&points)];
+
+    let x_labels = if is_last {
+        vec![
+            Span::raw(short_ts_label(first_ts)),
+            Span::raw(short_ts_label(mid_ts)),
+            Span::raw(short_ts_label(last_ts)),
+        ]
+    } else {
+        Vec::new()
+    };
+    let _ = x_max;
+    let x_axis = Axis::default()
+        .style(Style::default().fg(Color::DarkGray))
+        .bounds([0.0, x_max])
+        .labels(x_labels);
+    let y_axis = Axis::default()
+        .style(Style::default().fg(Color::DarkGray))
+        .bounds([0.0, peak * 1.1])
+        .labels(vec![Span::raw("0"), Span::raw(format!("{:.2}", peak))]);
+
+    let chart = Chart::new(datasets)
+        .block(block)
+        .x_axis(x_axis)
+        .y_axis(y_axis);
     f.render_widget(chart, area);
 }
 
