@@ -2788,6 +2788,36 @@ fn draw_time_chart(
                 .unwrap_or(0.0);
             pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
         });
+        // Unify Y-axis label width across all mini-charts. Without this,
+        // panels with bigger peaks ("120.30" — 6 chars) reserve a wider
+        // left gutter than panels with small peaks ("0.01" — 4 chars), so
+        // the chart plot areas start at different X positions and the
+        // shared X timeline labels at the bottom no longer line up with
+        // the data columns above.
+        let y_label_width = agents
+            .iter()
+            .map(|a| {
+                let peak = match unit {
+                    DashboardUnit::Dollars => stats
+                        .by_time_agent
+                        .get(a)
+                        .map(|v| v.iter().cloned().fold(0f64, f64::max))
+                        .unwrap_or(0.0),
+                    DashboardUnit::Calls => stats
+                        .by_time_agent_calls
+                        .get(a)
+                        .map(|v| {
+                            v.iter()
+                                .cloned()
+                                .fold(0u64, u64::max) as f64
+                                / bucket_hours
+                        })
+                        .unwrap_or(0.0),
+                };
+                format!("{:.2}", peak.max(0.0001)).len()
+            })
+            .max()
+            .unwrap_or(4);
         let n = agents.len() as u32;
         let constraints: Vec<Constraint> =
             (0..n).map(|_| Constraint::Ratio(1, n)).collect();
@@ -2800,7 +2830,7 @@ fn draw_time_chart(
             let is_last = i + 1 == agents.len();
             draw_agent_strip(
                 f, strip, *agent, stats, unit, bucket_hours, x_max, first_ts, mid_ts,
-                last_ts, is_last,
+                last_ts, is_last, y_label_width,
             );
         }
         return;
@@ -2874,6 +2904,7 @@ fn draw_agent_strip(
     mid_ts: u64,
     last_ts: u64,
     is_last: bool,
+    y_label_width: usize,
 ) {
     let color = agent_color(agent);
     let points: Vec<(f64, f64)> = match unit {
@@ -2942,10 +2973,14 @@ fn draw_agent_strip(
         .style(Style::default().fg(Color::DarkGray))
         .bounds([0.0, x_max])
         .labels(x_labels);
+    let w = y_label_width.max(1);
     let y_axis = Axis::default()
         .style(Style::default().fg(Color::DarkGray))
         .bounds([0.0, peak * 1.1])
-        .labels(vec![Span::raw("0"), Span::raw(format!("{:.2}", peak))]);
+        .labels(vec![
+            Span::raw(format!("{:>w$}", "0", w = w)),
+            Span::raw(format!("{:>w$.2}", peak, w = w)),
+        ]);
 
     let chart = Chart::new(datasets)
         .block(block)
