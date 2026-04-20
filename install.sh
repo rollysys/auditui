@@ -70,7 +70,10 @@ tarball_url="${base_url}/${stem}.tar.gz"
 sha_url="${tarball_url}.sha256"
 
 blue "[auditui] download:  $tarball_url"
-curl -fsSL -o "$tmp/${stem}.tar.gz"        "$tarball_url"
+# `-#`: keep curl's simple progress bar for the tarball download so users
+# on slow links see something happening. The SHA-256 sidecar is tiny
+# (~80 bytes) and stays silent to avoid a half-second blip of progress UI.
+curl -fL#  -o "$tmp/${stem}.tar.gz"        "$tarball_url"
 curl -fsSL -o "$tmp/${stem}.tar.gz.sha256" "$sha_url"
 
 blue "[auditui] verify sha256"
