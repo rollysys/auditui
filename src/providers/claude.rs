@@ -144,20 +144,26 @@ pub fn read_transcript(path: &Path) -> Result<Vec<TranscriptEvent>> {
         let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
         match ty {
             "user" => {
-                if let Some(text) = user_text(&v) {
+                // A user turn can carry BOTH text and tool_results in the
+                // same content array (e.g. user typed a follow-up after a
+                // tool ran). The previous if/else path emitted text XOR
+                // tool_results, so any tool_result on the same line as a
+                // (non-empty) text block got dropped — and even a
+                // whitespace-only text like `Some("")` from the parser
+                // was enough to silently swallow the tool_result body.
+                if let Some(text) = user_text(&v).filter(|t| !t.trim().is_empty()) {
                     out.push(TranscriptEvent {
-                        ts,
+                        ts: ts.clone(),
                         kind: TranscriptKind::User,
                         body: text,
                     });
-                } else {
-                    for tr in user_tool_results(&v) {
-                        out.push(TranscriptEvent {
-                            ts: ts.clone(),
-                            kind: TranscriptKind::ToolResult,
-                            body: tr,
-                        });
-                    }
+                }
+                for tr in user_tool_results(&v) {
+                    out.push(TranscriptEvent {
+                        ts: ts.clone(),
+                        kind: TranscriptKind::ToolResult,
+                        body: tr,
+                    });
                 }
             }
             "assistant" => {

@@ -264,10 +264,16 @@ pub fn read_transcript(path: &Path) -> Result<Vec<TranscriptEvent>> {
                             .get("exit_code")
                             .and_then(|x| x.as_i64())
                             .unwrap_or(0);
+                        // Prefix with a Record-Separator (U+001E) so the
+                        // transcript renderer can unambiguously detect
+                        // "this ToolResult came from a codex exec_command
+                        // and therefore has an exit code prefix", without
+                        // accidentally matching a shell script whose raw
+                        // stdout happens to start with "exit=1\n…".
                         out.push(TranscriptEvent {
                             ts,
                             kind: TranscriptKind::ToolResult,
-                            body: format!("exit={exit}\n{output}"),
+                            body: format!("\u{1e}exit={exit}\n{output}"),
                         });
                     }
                     _ => {}
