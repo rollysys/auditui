@@ -100,7 +100,12 @@ auditui --dry-run        # show session counts (sanity check)
 auditui --bench          # time a full dashboard compute across ranges
 auditui --memory-dump    # list memory + skills files found
 auditui --group-dump     # show session-grouping histogram
+auditui --check-update   # check GitHub for a newer release, print result
 ```
+
+### Update check
+
+On startup the TUI spawns a background worker that hits GitHub's `releases/latest` at most once per 24h and shows a small yellow `↑ vX.Y.Z` in the topbar if a newer release is out. The cache lives at `~/.auditui.json`. Set `AUDITUI_NO_UPDATE_CHECK=1` to disable the check entirely (no network, no cache write).
 
 ### Keys
 

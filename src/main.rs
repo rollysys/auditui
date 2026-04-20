@@ -7,6 +7,7 @@ mod providers;
 mod session;
 mod skills;
 mod tui;
+mod update;
 
 use anyhow::Result;
 
@@ -98,13 +99,26 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if args.iter().any(|a| a == "--check-update") {
+        let current = env!("CARGO_PKG_VERSION");
+        match update::check_latest(current) {
+            Some(tag) => {
+                println!("auditui {current} → update available: {tag}");
+                println!("upgrade: curl -fsSL https://raw.githubusercontent.com/rollysys/auditui/main/install.sh | bash");
+            }
+            None => println!("auditui {current} is up to date"),
+        }
+        return Ok(());
+    }
     let refresh_secs: u64 = args
         .iter()
         .position(|a| a == "--refresh")
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
-    tui::run(refresh_secs)
+    let update_state = update::UpdateState::new();
+    update::spawn_check(update_state.clone());
+    tui::run(refresh_secs, update_state)
 }
 
 fn bench() -> Result<()> {
