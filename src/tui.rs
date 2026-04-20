@@ -14,7 +14,7 @@ use crossterm::terminal::{
 };
 use rayon::prelude::*;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::symbols;
@@ -2737,23 +2737,104 @@ fn draw_time_chart(
         DashboardUnit::Dollars => "$",
         DashboardUnit::Calls => "calls/hr",
     };
-    let block = Block::default()
+    let outer_title_multi = if stats.by_time_agent.len() >= 2 {
+        " · per-agent"
+    } else {
+        ""
+    };
+    let outer_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(
-            " {} over time · bucket={} ",
+            " {} over time · bucket={}{} ",
             title_unit,
-            humanize_secs(stats.bucket_seconds)
+            humanize_secs(stats.bucket_seconds),
+            outer_title_multi,
         ))
         .border_style(Style::default().fg(Color::DarkGray));
     f.render_widget(Clear, area);
     if stats.by_time.is_empty() {
-        let p = Paragraph::new("no data").block(block);
+        let p = Paragraph::new("no data").block(outer_block);
         f.render_widget(p, area);
         return;
     }
+    let inner = outer_block.inner(area);
+    f.render_widget(outer_block, area);
+
     let bucket_hours = (stats.bucket_seconds as f64 / 3600.0).max(0.0001);
     let _ = hours;
-    let points: Vec<(f64, f64)> = match unit {
+
+    let first_ts = stats.by_time.first().map(|(t, _)| *t).unwrap_or(0);
+    let last_ts = stats.by_time.last().map(|(t, _)| *t).unwrap_or(0);
+    let mid_ts = first_ts + (last_ts - first_ts) / 2;
+    let x_max = (stats.by_time.len() as f64 - 1.0).max(1.0);
+
+    // Multi-agent: render one mini-chart per agent in a vertical stack, each
+    // with its own Y-axis (so small-magnitude agents like qwen remain
+    // readable). Shared X-axis bounds; X tick labels only on the bottom strip.
+    //
+    // Pick the series set that matches the current unit — the two maps are
+    // filtered independently in dashboard::compute(), so in Calls mode an
+    // agent without any LLM-call buckets should not appear as an empty strip,
+    // and a calls-only agent (cost=0, e.g. local-model session) should still
+    // appear.
+    let peak_for = |a: &Agent| -> f64 {
+        match unit {
+            DashboardUnit::Dollars => stats
+                .by_time_agent
+                .get(a)
+                .map(|v| v.iter().cloned().fold(0f64, f64::max))
+                .unwrap_or(0.0),
+            DashboardUnit::Calls => stats
+                .by_time_agent_calls
+                .get(a)
+                .map(|v| v.iter().cloned().fold(0u64, u64::max) as f64 / bucket_hours)
+                .unwrap_or(0.0),
+        }
+    };
+    let mut active_agents: Vec<Agent> = match unit {
+        DashboardUnit::Dollars => stats.by_time_agent.keys().copied().collect(),
+        DashboardUnit::Calls => stats.by_time_agent_calls.keys().copied().collect(),
+    };
+    if active_agents.len() >= 2 {
+        // Sort agents by peak descending so the biggest is first (most salient),
+        // smallest at the bottom (right next to shared X-axis labels).
+        active_agents.sort_by(|a, b| {
+            peak_for(b)
+                .partial_cmp(&peak_for(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let agents = active_agents;
+        // Unify Y-axis label width across all mini-charts. Without this,
+        // panels with bigger peaks ("120.30" — 6 chars) reserve a wider
+        // left gutter than panels with small peaks ("0.01" — 4 chars), so
+        // the chart plot areas start at different X positions and the
+        // shared X timeline labels at the bottom no longer line up with
+        // the data columns above.
+        let y_label_width = agents
+            .iter()
+            .map(|a| format!("{:.2}", peak_for(a).max(0.0001)).len())
+            .max()
+            .unwrap_or(4);
+        let n = agents.len() as u32;
+        let constraints: Vec<Constraint> =
+            (0..n).map(|_| Constraint::Ratio(1, n)).collect();
+        let strips = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(inner);
+        for (i, agent) in agents.iter().enumerate() {
+            let strip = strips[i];
+            let is_last = i + 1 == agents.len();
+            draw_agent_strip(
+                f, strip, *agent, stats, unit, bucket_hours, x_max, first_ts, mid_ts,
+                last_ts, is_last, y_label_width,
+            );
+        }
+        return;
+    }
+
+    // Single aggregate line (original behavior, no inner block).
+    let agg_points: Vec<(f64, f64)> = match unit {
         DashboardUnit::Dollars => stats
             .by_time
             .iter()
@@ -2767,22 +2848,16 @@ fn draw_time_chart(
             .map(|(i, (_, c))| (i as f64, *c as f64 / bucket_hours))
             .collect(),
     };
-    let x_max = (points.len() as f64 - 1.0).max(1.0);
-    let y_max = points
+    let y_max = agg_points
         .iter()
         .map(|(_, v)| *v)
         .fold(0.0f64, f64::max)
         .max(0.0001);
-
     let datasets = vec![Dataset::default()
         .marker(symbols::Marker::Braille)
         .graph_type(GraphType::Line)
         .style(Style::default().fg(Color::Yellow))
-        .data(&points)];
-
-    let first_ts = stats.by_time.first().map(|(t, _)| *t).unwrap_or(0);
-    let last_ts = stats.by_time.last().map(|(t, _)| *t).unwrap_or(0);
-    let mid_ts = first_ts + (last_ts - first_ts) / 2;
+        .data(&agg_points)];
 
     let x_axis = Axis::default()
         .style(Style::default().fg(Color::DarkGray))
@@ -2809,7 +2884,110 @@ fn draw_time_chart(
         .bounds([0.0, y_max * 1.1])
         .labels(vec![Span::raw(y0), Span::raw(ymid), Span::raw(ytop)]);
 
-    let chart = Chart::new(datasets).block(block).x_axis(x_axis).y_axis(y_axis);
+    let chart = Chart::new(datasets).x_axis(x_axis).y_axis(y_axis);
+    f.render_widget(chart, inner);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_agent_strip(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    agent: Agent,
+    stats: &Stats,
+    unit: DashboardUnit,
+    bucket_hours: f64,
+    x_max: f64,
+    first_ts: u64,
+    mid_ts: u64,
+    last_ts: u64,
+    is_last: bool,
+    y_label_width: usize,
+) {
+    let color = agent_color(agent);
+    let points: Vec<(f64, f64)> = match unit {
+        DashboardUnit::Dollars => stats
+            .by_time_agent
+            .get(&agent)
+            .map(|v| {
+                v.iter()
+                    .enumerate()
+                    .map(|(i, cost)| (i as f64, *cost))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        DashboardUnit::Calls => stats
+            .by_time_agent_calls
+            .get(&agent)
+            .map(|v| {
+                v.iter()
+                    .enumerate()
+                    .map(|(i, c)| (i as f64, *c as f64 / bucket_hours))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let peak = points
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(0.0f64, f64::max)
+        .max(0.0001);
+    let peak_label = match unit {
+        DashboardUnit::Dollars => format!("${:.4}", peak),
+        DashboardUnit::Calls => format!("{:.2}/h", peak),
+    };
+    let title_line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            agent_short(agent),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" · "),
+        Span::styled(peak_label, Style::default().fg(Color::Yellow)),
+        Span::raw(" "),
+    ]);
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .title(title_line)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let datasets = vec![Dataset::default()
+        .marker(symbols::Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::default().fg(color))
+        .data(&points)];
+
+    let x_labels = if is_last {
+        vec![
+            Span::raw(short_ts_label(first_ts)),
+            Span::raw(short_ts_label(mid_ts)),
+            Span::raw(short_ts_label(last_ts)),
+        ]
+    } else {
+        Vec::new()
+    };
+    // Force Right alignment: with the default Center alignment ratatui
+    // reserves half the first X label's width in the left gutter (see
+    // ratatui Chart::max_width_of_labels_left_of_y_axis). On the bottom
+    // panel (which has X labels) that would widen the left gutter by
+    // ~5-6 chars and break vertical alignment with the panels above.
+    let x_axis = Axis::default()
+        .style(Style::default().fg(Color::DarkGray))
+        .bounds([0.0, x_max])
+        .labels_alignment(Alignment::Right)
+        .labels(x_labels);
+    let w = y_label_width.max(1);
+    let y_axis = Axis::default()
+        .style(Style::default().fg(Color::DarkGray))
+        .bounds([0.0, peak * 1.1])
+        .labels(vec![
+            Span::raw(format!("{:>w$}", "0", w = w)),
+            Span::raw(format!("{:>w$.2}", peak, w = w)),
+        ]);
+
+    let chart = Chart::new(datasets)
+        .block(block)
+        .x_axis(x_axis)
+        .y_axis(y_axis);
     f.render_widget(chart, area);
 }
 

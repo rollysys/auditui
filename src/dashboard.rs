@@ -109,6 +109,11 @@ pub struct Stats {
     pub range: String,
     pub by_time: TimeSeries,
     pub by_time_calls: Vec<(u64, u64)>,
+    /// Per-agent per-bucket cost (USD). Indices align with `by_time`'s timestamps.
+    /// Only agents with at least one non-zero bucket are present.
+    pub by_time_agent: BTreeMap<Agent, Vec<f64>>,
+    /// Per-agent per-bucket LLM-call counts. Indices align with `by_time_calls`.
+    pub by_time_agent_calls: BTreeMap<Agent, Vec<u64>>,
     pub bucket_seconds: u64,
 }
 
@@ -233,6 +238,8 @@ pub fn compute(sessions: &[SessionMeta], store: &CacheStore, range: Range) -> St
     let mut totals = vec![0f64; n_buckets];
     let mut totals_calls = vec![0u64; n_buckets];
     let mut model_map: BTreeMap<String, ModelRow> = BTreeMap::new();
+    let mut per_agent_cost: BTreeMap<Agent, Vec<f64>> = BTreeMap::new();
+    let mut per_agent_calls: BTreeMap<Agent, Vec<u64>> = BTreeMap::new();
     for ps in &per_session {
         stats.total_sessions += 1;
         stats.total_turns += ps.turns;
@@ -256,11 +263,19 @@ pub fn compute(sessions: &[SessionMeta], store: &CacheStore, range: Range) -> St
         row.calls += ps.calls;
         row.usage.add(&ps.usage);
 
+        let cost_vec = per_agent_cost
+            .entry(ps.meta.agent)
+            .or_insert_with(|| vec![0f64; n_buckets]);
+        let calls_vec = per_agent_calls
+            .entry(ps.meta.agent)
+            .or_insert_with(|| vec![0u64; n_buckets]);
         for (i, v) in ps.buckets.iter().enumerate() {
             totals[i] += v;
+            cost_vec[i] += v;
         }
         for (i, v) in ps.call_buckets.iter().enumerate() {
             totals_calls[i] += v;
+            calls_vec[i] += v;
         }
     }
 
@@ -269,6 +284,16 @@ pub fn compute(sessions: &[SessionMeta], store: &CacheStore, range: Range) -> St
         .collect();
     stats.by_time_calls = (0..n_buckets)
         .map(|i| (ts_start + i as u64 * bucket_secs, totals_calls[i]))
+        .collect();
+    // Drop agents whose entire series is zero (e.g. a filter excluded them but they
+    // still appeared as 0-valued PerSession entries earlier).
+    stats.by_time_agent = per_agent_cost
+        .into_iter()
+        .filter(|(_, v)| v.iter().any(|c| *c > 0.0))
+        .collect();
+    stats.by_time_agent_calls = per_agent_calls
+        .into_iter()
+        .filter(|(_, v)| v.iter().any(|c| *c > 0))
         .collect();
 
     stats.by_model = model_map.into_values().collect();
