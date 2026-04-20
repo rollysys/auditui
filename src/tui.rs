@@ -278,6 +278,10 @@ struct App {
     expanded_groups: HashSet<String>,
     refresh_secs: Arc<AtomicU64>,
     update_state: crate::update::UpdateState,
+    /// Full rendered line count from the last draw_detail pass. Written by
+    /// draw_detail, read by move_scroll to clamp scroll to a correct upper
+    /// bound. Zero before the first render.
+    detail_row_count: u16,
 }
 
 #[derive(Clone)]
@@ -384,6 +388,7 @@ impl App {
             expanded_groups: HashSet::new(),
             refresh_secs,
             update_state,
+            detail_row_count: 0,
         };
         app.spawn_warm();
         app.request_preview_for_selected();
@@ -1002,10 +1007,11 @@ impl App {
     }
 
     fn move_scroll(&mut self, code: KeyCode) {
-        let max = self
-            .current_transcript()
-            .map(|t| (t.len() as u16).saturating_mul(3))
-            .unwrap_or(0);
+        // detail_row_count is the full rendered line count from the last
+        // draw_detail pass. Using events.len() * 3 as a proxy (the old code)
+        // cuts scroll off at ~12 for a 4-event session even when the body
+        // renders to hundreds of lines.
+        let max = self.detail_row_count.saturating_sub(1);
         let cur = self.scroll;
         let next = match code {
             KeyCode::Up => cur.saturating_sub(1),
@@ -1642,6 +1648,13 @@ impl App {
                 Line::from("Tab to scroll · q quit · r refresh"),
             ]
         };
+
+        // Stash the rendered line count so move_scroll has a real upper bound
+        // instead of the old `event_count × 3` heuristic (which caps at 12 for
+        // a 4-event session and hides everything past the first screenful —
+        // e.g. a single 125 KB prompt event renders to hundreds of lines but
+        // was unreachable by ↓/PgDn).
+        self.detail_row_count = content.len().min(u16::MAX as usize) as u16;
 
         let para = Paragraph::new(content)
             .block(block)
