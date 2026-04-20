@@ -104,7 +104,12 @@ auditui --dry-run        # 显示 session 数量(健全检查)
 auditui --bench          # 对所有时间范围跑一次 dashboard 计算并计时
 auditui --memory-dump    # 列出找到的 memory + skills 文件
 auditui --group-dump     # 显示 session 分组直方图
+auditui --check-update   # 去 GitHub 查有没有新版,打印结果
 ```
+
+### 自动检查更新
+
+TUI 启动后会在后台线程去拉 GitHub `releases/latest`,每 24h 最多一次,顶栏出现小黄色 `↑ vX.Y.Z` 提示有新版可装。缓存在 `~/.auditui.json`。设环境变量 `AUDITUI_NO_UPDATE_CHECK=1` 可完全关闭(不拉网、不写缓存)。
 
 ### 快捷键
 

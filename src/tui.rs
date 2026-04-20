@@ -151,7 +151,7 @@ impl PreviewCache {
     }
 }
 
-pub fn run(refresh_secs: u64) -> Result<()> {
+pub fn run(refresh_secs: u64, update_state: crate::update::UpdateState) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -160,7 +160,7 @@ pub fn run(refresh_secs: u64) -> Result<()> {
 
     term.draw(|f| draw_splash(f, "Indexing sessions…", "Scanning ~/.claude, ~/.codex, ~/.qwen"))?;
 
-    let mut app = App::new(refresh_secs);
+    let mut app = App::new(refresh_secs, update_state);
     let res = app.run(&mut term);
 
     disable_raw_mode()?;
@@ -272,6 +272,7 @@ struct App {
     groups_cache: Option<Vec<SessionGroup>>,
     expanded_groups: HashSet<String>,
     refresh_secs: Arc<AtomicU64>,
+    update_state: crate::update::UpdateState,
 }
 
 #[derive(Clone)]
@@ -298,7 +299,7 @@ impl ListRow {
 }
 
 impl App {
-    fn new(initial_refresh_secs: u64) -> Self {
+    fn new(initial_refresh_secs: u64, update_state: crate::update::UpdateState) -> Self {
         let t0 = Instant::now();
         let sessions = session::index_all();
         let elapsed = t0.elapsed();
@@ -377,6 +378,7 @@ impl App {
             groups_cache: None,
             expanded_groups: HashSet::new(),
             refresh_secs,
+            update_state,
         };
         app.spawn_warm();
         app.request_preview_for_selected();
@@ -1392,6 +1394,16 @@ impl App {
             },
         ));
         spans.push(Span::styled(" [+/-/0]", Style::default().fg(Color::DarkGray)));
+        if let Some(tag) = self.update_state.latest() {
+            spans.push(Span::styled("  │  ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                format!("↑ {tag}"),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
