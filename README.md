@@ -130,6 +130,8 @@ On startup the TUI spawns a background worker that hits GitHub's `releases/lates
 | sessions | `[` / `]` | previous / next session in the same group |
 | sessions | `Tab` | switch focus between list and detail |
 | sessions | `/` | full-text search across transcripts |
+| sessions | `z` | toggle fold mode: smart (default — collapse long tool_result / system / thinking) ↔ expand all |
+| sessions | `x` | in smart mode, toggle fold of the event under the scroll cursor |
 | dashboard | `←` / `→` | change time range |
 | dashboard | `u` | toggle unit: `$` ↔ `calls/hr` |
 | dashboard | `v` | toggle overview ↔ per-group bar chart |
