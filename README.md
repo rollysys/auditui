@@ -67,7 +67,15 @@ thousands of them, across dozens of repos, and no good way to:
 
 ## Install
 
-### Prebuilt binaries
+### One-liner (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rollysys/auditui/main/install.sh | bash
+```
+
+Detects your platform, downloads the latest release tarball from GitHub, verifies its SHA-256, and installs the `auditui` binary to `~/.local/bin`. Env overrides: `PREFIX=/usr/local/bin`, `TAG=v0.1.0` to pin a version.
+
+### Prebuilt binaries (manual)
 
 Download from the [GitHub Releases](https://github.com/rollysys/auditui/releases) page. Available targets:
 

@@ -63,7 +63,15 @@
 
 ## 安装
 
-### 预编译二进制
+### 一行命令安装(推荐)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rollysys/auditui/main/install.sh | bash
+```
+
+自动检测平台 → 从 GitHub 下载最新 release tarball → SHA-256 校验 → 装到 `~/.local/bin/auditui`。环境变量可覆盖:`PREFIX=/usr/local/bin`(改安装位置)、`TAG=v0.1.0`(锁版本)。
+
+### 预编译二进制(手动下载)
 
 去 [GitHub Releases](https://github.com/rollysys/auditui/releases) 页面下载。提供的目标平台:
 
