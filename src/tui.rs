@@ -1,5 +1,6 @@
 use crate::cache::CacheStore;
 use crate::dashboard::{self, Range, Stats};
+use crate::md;
 use crate::memory::{self, MemoryIndex};
 use crate::providers::Agent;
 use crate::session::{self, SessionGroup, SessionMeta, TranscriptEvent, TranscriptKind};
@@ -2355,22 +2356,22 @@ fn header_plain(tag: &'static str, tag_color: Color, ts: &str, suffix: Option<St
 
 fn render_user(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: usize) {
     out.push(header_plain("USER", Color::LightBlue, &ev.ts, None));
-    let style = Style::default().fg(Color::White);
-    for line in ev.body.lines() {
-        for piece in wrap_to_width(line, width) {
-            out.push(Line::from(Span::styled(piece, style)));
-        }
+    // User prompts occasionally include markdown — ``` fences, lists, code —
+    // so pipe through the same renderer Memory/Skills uses. Empty body
+    // tolerated (happens with tool-result-only user turns the parser has
+    // already stripped).
+    if ev.body.trim().is_empty() {
+        return;
     }
+    out.extend(md::to_lines_width(&ev.body, width));
 }
 
 fn render_assistant(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: usize) {
     out.push(header("ASSIS", Color::Cyan, &ev.ts, None, BG_ASSIS, width));
-    let default = Color::Rgb(220, 220, 220);
-    for line in ev.body.lines() {
-        for piece in wrap_to_width(line, width) {
-            out.push(Line::from(highlight_keywords(&piece, default)));
-        }
+    if ev.body.trim().is_empty() {
+        return;
     }
+    out.extend(md::to_lines_width(&ev.body, width));
 }
 
 fn render_thinking(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: usize) {
