@@ -7,9 +7,11 @@
 #   curl -fsSL https://raw.githubusercontent.com/rollysys/auditui/main/install.sh | bash
 #
 # Environment overrides:
-#   PREFIX   install directory (default: $HOME/.local/bin)
-#   TAG      specific release tag (default: latest)
-#   REPO     owner/name (default: rollysys/auditui)
+#   PREFIX               install directory (default: $HOME/.local/bin)
+#   TAG                  specific release tag (default: latest)
+#   REPO                 owner/name (default: rollysys/auditui)
+#   AUDITUI_SKIP_SKILL   set to 1 to skip the optional session-audit skill prompt
+#   AUDITUI_INSTALL_SKILL set to 1 to install the skill non-interactively
 
 set -euo pipefail
 
@@ -101,3 +103,44 @@ esac
 
 echo ""
 "$PREFIX/$BIN" --dry-run 2>&1 | head -1 | sed 's/^/[auditui] smoke: /' || true
+
+# ---- optional: session-audit skill ----
+# Teaches any agent (Claude Code / Codex / Qwen / SDK) how to read local
+# agent session logs. Single SKILL.md file, no executable scripts.
+skill_dir="$HOME/.claude/skills/session-audit"
+skill_url="https://raw.githubusercontent.com/$REPO/main/skills/session-audit/SKILL.md"
+install_skill=0
+
+if [ -d "$skill_dir" ]; then
+    :  # already installed, don't prompt
+elif [ -n "${AUDITUI_SKIP_SKILL:-}" ]; then
+    :  # user opted out entirely
+elif [ "${AUDITUI_INSTALL_SKILL:-0}" = "1" ]; then
+    install_skill=1
+elif [ -e /dev/tty ]; then
+    echo ""
+    blue "Optional: install the 'session-audit' skill?"
+    blue "  Teaches any Claude Code / Codex / Qwen / SDK agent how to read local"
+    blue "  agent session logs (directory layout, JSONL schema, common recipes)."
+    blue "  Single file, ~7 KB, installs to $skill_dir/SKILL.md"
+    printf "  [y/N] "
+    read -r ans </dev/tty || ans=""
+    case "$ans" in
+        y|Y|yes|Yes) install_skill=1 ;;
+    esac
+fi
+
+if [ "$install_skill" = "1" ]; then
+    blue "[auditui] installing session-audit skill → $skill_dir/SKILL.md"
+    mkdir -p "$skill_dir"
+    if curl -fsSL -o "$skill_dir/SKILL.md" "$skill_url"; then
+        green "[auditui] session-audit skill installed"
+    else
+        red "[auditui] failed to download $skill_url"
+    fi
+elif [ ! -d "$skill_dir" ] && [ -z "${AUDITUI_SKIP_SKILL:-}" ]; then
+    echo ""
+    blue "skipped session-audit skill. install later with:"
+    echo "    mkdir -p $skill_dir && curl -fsSL -o $skill_dir/SKILL.md \\"
+    echo "        $skill_url"
+fi
