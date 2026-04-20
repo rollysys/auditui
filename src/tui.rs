@@ -2753,7 +2753,7 @@ fn draw_time_chart(
     }
     let bucket_hours = (stats.bucket_seconds as f64 / 3600.0).max(0.0001);
     let _ = hours;
-    let points: Vec<(f64, f64)> = match unit {
+    let agg_points: Vec<(f64, f64)> = match unit {
         DashboardUnit::Dollars => stats
             .by_time
             .iter()
@@ -2767,18 +2767,73 @@ fn draw_time_chart(
             .map(|(i, (_, c))| (i as f64, *c as f64 / bucket_hours))
             .collect(),
     };
-    let x_max = (points.len() as f64 - 1.0).max(1.0);
-    let y_max = points
-        .iter()
-        .map(|(_, v)| *v)
-        .fold(0.0f64, f64::max)
-        .max(0.0001);
+    // Show per-agent lines only when at least 2 agents have non-zero data
+    // in the current window — otherwise fall back to a single aggregate line.
+    let show_multi = stats.by_time_agent.len() >= 2;
+    let per_agent_points: Vec<(Agent, Vec<(f64, f64)>)> = if show_multi {
+        stats
+            .by_time_agent
+            .iter()
+            .map(|(a, cost_vec)| {
+                let pts: Vec<(f64, f64)> = match unit {
+                    DashboardUnit::Dollars => cost_vec
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| (i as f64, *v))
+                        .collect(),
+                    DashboardUnit::Calls => {
+                        let calls_vec = stats
+                            .by_time_agent_calls
+                            .get(a)
+                            .cloned()
+                            .unwrap_or_default();
+                        calls_vec
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| (i as f64, *c as f64 / bucket_hours))
+                            .collect()
+                    }
+                };
+                (*a, pts)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let x_max = (agg_points.len() as f64 - 1.0).max(1.0);
+    let y_max = if show_multi {
+        per_agent_points
+            .iter()
+            .flat_map(|(_, pts)| pts.iter().map(|(_, v)| *v))
+            .fold(0.0f64, f64::max)
+            .max(0.0001)
+    } else {
+        agg_points
+            .iter()
+            .map(|(_, v)| *v)
+            .fold(0.0f64, f64::max)
+            .max(0.0001)
+    };
 
-    let datasets = vec![Dataset::default()
-        .marker(symbols::Marker::Braille)
-        .graph_type(GraphType::Line)
-        .style(Style::default().fg(Color::Yellow))
-        .data(&points)];
+    let datasets: Vec<Dataset> = if show_multi {
+        per_agent_points
+            .iter()
+            .map(|(a, pts)| {
+                Dataset::default()
+                    .name(agent_short(*a))
+                    .marker(symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(agent_color(*a)))
+                    .data(pts)
+            })
+            .collect()
+    } else {
+        vec![Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Yellow))
+            .data(&agg_points)]
+    };
 
     let first_ts = stats.by_time.first().map(|(t, _)| *t).unwrap_or(0);
     let last_ts = stats.by_time.last().map(|(t, _)| *t).unwrap_or(0);
