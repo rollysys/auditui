@@ -2051,8 +2051,8 @@ impl App {
             DashboardUnit::Calls => "calls/hr",
         };
         lines.push(Line::from(format!(
-            "{:24} {:>8} {:>8} {:>8} {:>12} {:>14} {:>14}",
-            "model", "sess", "turns", "calls", metric_header, "in_tok", "out_tok"
+            "{:22} {:>7} {:>7} {:>7} {:>12} {:>12} {:>12} {:>12}",
+            "model", "sess", "turns", "calls", metric_header, "in_tok", "out_tok", "cache_rd"
         )));
         for m in &stats.by_model {
             let metric = match unit {
@@ -2060,14 +2060,15 @@ impl App {
                 DashboardUnit::Calls => format!("{:.2}", m.calls as f64 / hours),
             };
             lines.push(Line::from(format!(
-                "{:24} {:>8} {:>8} {:>8} {:>12} {:>14} {:>14}",
-                truncate(&m.model, 24),
+                "{:22} {:>7} {:>7} {:>7} {:>12} {:>12} {:>12} {:>12}",
+                truncate(&m.model, 22),
                 m.sessions,
                 m.turns,
                 m.calls,
                 metric,
                 fmt_int(m.usage.input_tokens),
                 fmt_int(m.usage.output_tokens),
+                fmt_int(m.usage.cache_read_tokens),
             )));
         }
 

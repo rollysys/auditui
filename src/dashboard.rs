@@ -226,6 +226,7 @@ pub fn compute(sessions: &[SessionMeta], store: &CacheStore, range: Range) -> St
             ps.turns > 0
                 || ps.usage.input_tokens > 0
                 || ps.usage.output_tokens > 0
+                || ps.usage.cache_read_tokens > 0
                 || ps.usage.web_search_calls > 0
         })
         .collect();
