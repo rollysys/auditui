@@ -1498,10 +1498,12 @@ impl App {
             },
         ));
         spans.push(Span::styled(" [+/-/0]", Style::default().fg(Color::DarkGray)));
-        if let Some(tag) = self.update_state.latest() {
+        if let crate::update::UpdateStatus::Available { current_version, latest_version } =
+            self.update_state.status()
+        {
             spans.push(Span::styled("  │  ", Style::default().fg(Color::DarkGray)));
             spans.push(Span::styled(
-                format!("↑ {tag}"),
+                format!("↑ {current_version}->{latest_version}"),
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Yellow)

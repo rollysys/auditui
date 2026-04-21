@@ -3,10 +3,9 @@
 //! Philosophy: cheap, opt-out-able, never blocks UI. On startup the main
 //! thread spawns a single worker; worker hits GitHub's `releases/latest`
 //! API at most once per 24h (cached to `~/.auditui.json`) and publishes
-//! the newest tag (stripped to just the string) to a shared `Arc<Mutex<_>>`
-//! when it's semver-greater than the binary's own `CARGO_PKG_VERSION`.
+//! a small state machine to a shared `Arc<Mutex<_>>`.
 //! The TUI topbar polls this on each draw and renders a subtle yellow
-//! "↑ vX.Y.Z" nudge when present.
+//! "↑ current->latest" nudge when an update is available.
 //!
 //! Opt-out: set `AUDITUI_NO_UPDATE_CHECK=1`. No check fires; no network;
 //! no cache write.
@@ -96,55 +95,86 @@ fn is_newer(candidate_tag: &str, current_version: &str) -> bool {
     }
 }
 
-/// Return Some(tag) if a newer release is available, else None.
-/// Uses cache when fresh; otherwise hits GitHub once and updates cache.
-pub fn check_latest(current_version: &str) -> Option<String> {
+/// Concrete status for the update checker. `Unchecked`/`Checking` are
+/// transient runtime states; `Available`/`UpToDate`/`Failed` are terminal
+/// results of a completed check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateStatus {
+    Unchecked,
+    Checking,
+    Available { current_version: String, latest_version: String },
+    UpToDate { current_version: String, latest_version: String },
+    Failed,
+}
+
+fn status_from_latest_tag(current_version: &str, latest_version: String) -> UpdateStatus {
+    if is_newer(&latest_version, current_version) {
+        UpdateStatus::Available {
+            current_version: current_version.to_string(),
+            latest_version,
+        }
+    } else {
+        UpdateStatus::UpToDate {
+            current_version: current_version.to_string(),
+            latest_version,
+        }
+    }
+}
+
+/// Check GitHub once (or a fresh cache entry) and classify the result into a
+/// concrete state instead of collapsing everything into `None`.
+pub fn check_latest(current_version: &str) -> UpdateStatus {
     let now = now_secs();
     if let Some(c) = load_cache() {
         if now.saturating_sub(c.checked_at) < CACHE_TTL_SECS && !c.latest_tag.is_empty() {
-            return is_newer(&c.latest_tag, current_version).then_some(c.latest_tag);
+            return status_from_latest_tag(current_version, c.latest_tag);
         }
     }
-    let tag = fetch_latest_tag()?;
+    let tag = match fetch_latest_tag() {
+        Some(tag) => tag,
+        None => return UpdateStatus::Failed,
+    };
     save_cache(&CacheEntry {
         latest_tag: tag.clone(),
         checked_at: now,
     });
-    is_newer(&tag, current_version).then_some(tag)
+    status_from_latest_tag(current_version, tag)
 }
 
-/// Shared handle to the "there's a newer version" hint. `latest()` returns
-/// `Some(tag)` once the background worker has determined an update is
-/// available; otherwise `None`.
-#[derive(Clone, Default)]
-pub struct UpdateState(Arc<Mutex<Option<String>>>);
+/// Shared handle to the background update-check status.
+#[derive(Clone)]
+pub struct UpdateState(Arc<Mutex<UpdateStatus>>);
+
+impl Default for UpdateState {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(UpdateStatus::Unchecked)))
+    }
+}
 
 impl UpdateState {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn latest(&self) -> Option<String> {
-        self.0.lock().ok().and_then(|g| g.clone())
+    pub fn status(&self) -> UpdateStatus {
+        self.0.lock().map(|g| g.clone()).unwrap_or(UpdateStatus::Failed)
     }
-    fn set(&self, tag: String) {
+    fn set(&self, status: UpdateStatus) {
         if let Ok(mut g) = self.0.lock() {
-            *g = Some(tag);
+            *g = status;
         }
     }
 }
 
 /// Spawn a background worker that checks for updates. No-op when the
 /// `AUDITUI_NO_UPDATE_CHECK` env var is set to `1`. Never panics — all
-/// errors (no network, timeout, parse failure) silently leave the hint
-/// empty.
+/// errors (no network, timeout, parse failure) resolve to `Failed`.
 pub fn spawn_check(state: UpdateState) {
     if std::env::var("AUDITUI_NO_UPDATE_CHECK").ok().as_deref() == Some("1") {
         return;
     }
+    state.set(UpdateStatus::Checking);
     std::thread::spawn(move || {
-        if let Some(tag) = check_latest(env!("CARGO_PKG_VERSION")) {
-            state.set(tag);
-        }
+        state.set(check_latest(env!("CARGO_PKG_VERSION")));
     });
 }
 
@@ -179,5 +209,32 @@ mod tests {
     fn malformed_tags_do_not_trigger_update() {
         assert!(!is_newer("garbage", "0.1.0"));
         assert!(!is_newer("", "0.1.0"));
+    }
+
+    #[test]
+    fn classifies_available_updates_with_both_versions() {
+        assert_eq!(
+            status_from_latest_tag("0.1.2", "v0.1.3".to_string()),
+            UpdateStatus::Available {
+                current_version: "0.1.2".to_string(),
+                latest_version: "v0.1.3".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_up_to_date_without_collapsing_to_none() {
+        assert_eq!(
+            status_from_latest_tag("0.1.2", "v0.1.2".to_string()),
+            UpdateStatus::UpToDate {
+                current_version: "0.1.2".to_string(),
+                latest_version: "v0.1.2".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn new_update_state_starts_unchecked() {
+        assert_eq!(UpdateState::new().status(), UpdateStatus::Unchecked);
     }
 }
