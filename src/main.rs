@@ -11,8 +11,36 @@ mod update;
 
 use anyhow::Result;
 
+const HELP_TEXT: &str = "\
+auditui — local TUI viewer for Claude Code / Codex / Qwen session transcripts
+
+USAGE:
+    auditui [OPTIONS]
+
+OPTIONS:
+    -h, --help             Print help and exit
+    -V, --version          Print version and exit
+        --refresh <SECS>   Auto-refresh interval for TUI (default: 30)
+        --check-update     Check GitHub for a newer release and exit
+        --dry-run          Index sessions once, print summary, and exit
+        --bench            Benchmark dashboard compute passes and exit
+        --group-dump       Print session-grouping histogram and exit
+        --memory-dump      Print memory + skills index and exit
+        --md-dump <PATH>   Render a Markdown file through the parser and exit
+
+With no options, launches the interactive TUI.
+";
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{HELP_TEXT}");
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("auditui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.iter().any(|a| a == "--dry-run") {
         let list = session::index_all();
         println!("indexed {} sessions", list.len());
