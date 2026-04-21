@@ -102,11 +102,17 @@ fn main() -> Result<()> {
     if args.iter().any(|a| a == "--check-update") {
         let current = env!("CARGO_PKG_VERSION");
         match update::check_latest(current) {
-            Some(tag) => {
-                println!("auditui {current} → update available: {tag}");
+            update::UpdateStatus::Available { current_version, latest_version } => {
+                println!("auditui {current_version} → update available: {latest_version}");
                 println!("upgrade: curl -fsSL https://raw.githubusercontent.com/rollysys/auditui/main/install.sh | bash");
             }
-            None => println!("auditui {current} is up to date"),
+            update::UpdateStatus::UpToDate { current_version, .. } => {
+                println!("auditui {current_version} is up to date");
+            }
+            update::UpdateStatus::Failed => eprintln!("auditui {current} update check failed"),
+            update::UpdateStatus::Unchecked | update::UpdateStatus::Checking => {
+                eprintln!("auditui {current} update check did not complete");
+            }
         }
         return Ok(());
     }
