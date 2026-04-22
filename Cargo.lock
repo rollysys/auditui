@@ -49,7 +49,7 @@ name = "auditui"
 version = "0.1.2"
 dependencies = [
  "anyhow",
- "bincode",
+ "auditui-core",
  "chrono",
  "crossterm",
  "dirs",
@@ -57,11 +57,25 @@ dependencies = [
  "ratatui",
  "rayon",
  "regex",
- "rusqlite",
  "serde",
  "serde_json",
  "unicode-width 0.1.14",
  "ureq",
+]
+
+[[package]]
+name = "auditui-core"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "chrono",
+ "dirs",
+ "rayon",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "walkdir",
 ]
 
