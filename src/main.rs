@@ -1,5 +1,6 @@
 mod cache;
 mod cost;
+mod custom_terminal;
 mod dashboard;
 mod md;
 mod memory;

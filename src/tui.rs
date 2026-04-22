@@ -23,7 +23,7 @@ use ratatui::widgets::{
     Axis, Bar, BarChart, BarGroup, Block, Borders, Chart, Clear, Dataset, GraphType, List,
     ListItem, ListState, Paragraph, Wrap,
 };
-use ratatui::Terminal;
+use crate::custom_terminal::Terminal;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -190,7 +190,7 @@ pub fn run(refresh_secs: u64, update_state: crate::update::UpdateState) -> Resul
     res
 }
 
-fn draw_splash(f: &mut ratatui::Frame<'_>, title: &str, sub: &str) {
+fn draw_splash(f: &mut crate::custom_terminal::Frame<'_>, title: &str, sub: &str) {
     let area = f.area();
     let block = Block::default()
         .borders(Borders::ALL)
@@ -490,7 +490,10 @@ impl App {
         });
     }
 
-    fn run<B: ratatui::backend::Backend>(&mut self, term: &mut Terminal<B>) -> Result<()> {
+    fn run<B: ratatui::backend::Backend + std::io::Write>(
+        &mut self,
+        term: &mut Terminal<B>,
+    ) -> Result<()> {
         loop {
             term.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(40))? {
@@ -1419,7 +1422,7 @@ impl App {
         self.stats_for = Some(key);
     }
 
-    fn draw(&mut self, f: &mut ratatui::Frame) {
+    fn draw(&mut self, f: &mut crate::custom_terminal::Frame) {
         let main = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -1439,7 +1442,7 @@ impl App {
         self.draw_status(f, main[2]);
     }
 
-    fn draw_topbar(&self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_topbar(&self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         let mut spans = vec![Span::raw(" auditit  ")];
         for (v, label, key) in [
             (View::Sessions, "Sessions", "S"),
@@ -1515,7 +1518,7 @@ impl App {
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    fn draw_sessions(&mut self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_sessions(&mut self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
@@ -1528,7 +1531,7 @@ impl App {
         self.draw_detail(f, cols[1]);
     }
 
-    fn draw_search_list(&mut self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_search_list(&mut self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         let items: Vec<ListItem> = self
             .search
             .results
@@ -1583,7 +1586,7 @@ impl App {
         f.render_stateful_widget(list, area, &mut self.search.list_state);
     }
 
-    fn draw_list(&mut self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_list(&mut self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         let rows = self.list_rows();
         let expanded = self.expanded_groups.clone();
         let groups: Vec<SessionGroup> = self.groups().to_vec();
@@ -1669,7 +1672,7 @@ impl App {
         f.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn draw_detail(&mut self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_detail(&mut self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         let focus_on = matches!(self.focus, Focus::Detail);
         let sel_sid = self.selected_sid();
         let title = match sel_sid.as_deref() {
@@ -1782,7 +1785,7 @@ impl App {
         f.render_widget(para, area);
     }
 
-    fn draw_memory(&mut self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_memory(&mut self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
@@ -1850,7 +1853,7 @@ impl App {
         f.render_widget(para, cols[1]);
     }
 
-    fn draw_skills(&mut self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_skills(&mut self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
@@ -1937,7 +1940,7 @@ impl App {
         f.render_widget(para, cols[1]);
     }
 
-    fn draw_dashboard(&mut self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_dashboard(&mut self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         let unit_label = match self.dashboard_unit {
             DashboardUnit::Dollars => "$",
             DashboardUnit::Calls => "calls/hr",
@@ -1973,7 +1976,7 @@ impl App {
 
     fn draw_dashboard_overview(
         &mut self,
-        f: &mut ratatui::Frame,
+        f: &mut crate::custom_terminal::Frame,
         inner: Rect,
         stats: &Stats,
     ) {
@@ -2104,7 +2107,7 @@ impl App {
 
     fn draw_dashboard_sessions(
         &mut self,
-        f: &mut ratatui::Frame,
+        f: &mut crate::custom_terminal::Frame,
         inner: Rect,
         stats: &Stats,
     ) {
@@ -2211,7 +2214,7 @@ impl App {
         f.render_widget(para, inner);
     }
 
-    fn draw_status(&self, f: &mut ratatui::Frame, area: Rect) {
+    fn draw_status(&self, f: &mut crate::custom_terminal::Frame, area: Rect) {
         if matches!(self.mode, Mode::Search) {
             let line = Line::from(vec![
                 Span::styled(" / ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
@@ -2894,7 +2897,7 @@ fn make_snippet(body: &str, match_byte_pos: usize, q_len_bytes: usize) -> Snippe
 
 
 fn draw_agent_bars(
-    f: &mut ratatui::Frame,
+    f: &mut crate::custom_terminal::Frame,
     area: Rect,
     stats: &Stats,
     unit: DashboardUnit,
@@ -2970,7 +2973,7 @@ fn draw_agent_bars(
 }
 
 fn draw_time_chart(
-    f: &mut ratatui::Frame,
+    f: &mut crate::custom_terminal::Frame,
     area: Rect,
     stats: &Stats,
     unit: DashboardUnit,
@@ -3133,7 +3136,7 @@ fn draw_time_chart(
 
 #[allow(clippy::too_many_arguments)]
 fn draw_agent_strip(
-    f: &mut ratatui::Frame,
+    f: &mut crate::custom_terminal::Frame,
     area: Rect,
     agent: Agent,
     stats: &Stats,
