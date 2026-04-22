@@ -19,6 +19,26 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::symbols;
+
+/// ASCII-only border glyphs. Block's default `PLAIN` set uses Unicode
+/// box-drawing characters (`│─┌┐└┘`), all of which are East-Asian
+/// Ambiguous-Width. On CJK-locale terminals those render at 2 cells
+/// while `unicode-width` (used by both ratatui and us) reports 1.
+/// Each ambiguous glyph in a row introduces a +1 physical-cursor drift,
+/// and after a content-shape change (fold toggle + Home/End) the
+/// accumulated drift leaves residue on the left and splatters the
+/// border on the right. Using `|-+` eliminates the whole class of
+/// drift from auditui's chrome.
+const ASCII_BORDER: symbols::border::Set = symbols::border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
 use ratatui::widgets::{
     Axis, Bar, BarChart, BarGroup, Block, Borders, Chart, Clear, Dataset, GraphType, List,
     ListItem, ListState, Paragraph, Wrap,
@@ -192,7 +212,7 @@ pub fn run(refresh_secs: u64, update_state: crate::update::UpdateState) -> Resul
 
 fn draw_splash(f: &mut crate::custom_terminal::Frame<'_>, title: &str, sub: &str) {
     let area = f.area();
-    let block = Block::default()
+    let block = Block::default().border_set(ASCII_BORDER)
         .borders(Borders::ALL)
         .title(" auditit ")
         .style(Style::default().fg(Color::Cyan));
@@ -497,23 +517,38 @@ impl App {
         loop {
             term.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(40))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
-                    }
-                    // Ctrl-C always quits.
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        return Ok(());
-                    }
-                    if matches!(self.mode, Mode::Search) {
-                        self.handle_key_search(key.code);
-                    } else {
-                        if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
+                // Coalesce keys under auto-repeat (user holding PgUp/PgDn/
+                // Up/Down). The OS queues dozens of KeyPress events per
+                // second; if we re-draw after every one, the per-frame
+                // content shift is too big for the terminal's ANSI pipe to
+                // keep up with and residue starts to show. Drain whatever
+                // is already waiting, apply them all, then draw once. The
+                // terminal-level refresh rate caps naturally at whatever
+                // the draw loop can sustain, and the final visible state
+                // is always correct.
+                loop {
+                    if let Event::Key(key) = event::read()? {
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        // Ctrl-C always quits.
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
                             return Ok(());
                         }
-                        self.handle_key(key.code);
+                        if matches!(self.mode, Mode::Search) {
+                            self.handle_key_search(key.code);
+                        } else {
+                            if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
+                                return Ok(());
+                            }
+                            self.handle_key(key.code);
+                        }
+                    }
+                    // Stop when the input queue is empty — don't block.
+                    if !event::poll(Duration::from_millis(0))? {
+                        break;
                     }
                 }
             }
@@ -1571,7 +1606,7 @@ impl App {
             if self.search.dirty_at.is_some() { "…" } else { "" },
             self.search.results.len()
         );
-        let block = Block::default()
+        let block = Block::default().border_set(ASCII_BORDER)
             .borders(Borders::ALL)
             .title(title)
             .border_style(Style::default().fg(Color::Yellow));
@@ -1657,7 +1692,7 @@ impl App {
             self.sessions.len()
         );
         let focus_on = matches!(self.focus, Focus::List);
-        let block = Block::default()
+        let block = Block::default().border_set(ASCII_BORDER)
             .borders(Borders::ALL)
             .title(title)
             .border_style(focus_border(focus_on));
@@ -1709,7 +1744,7 @@ impl App {
                 }
             }
         };
-        let block = Block::default()
+        let block = Block::default().border_set(ASCII_BORDER)
             .borders(Borders::ALL)
             .title(title)
             .border_style(focus_border(focus_on));
@@ -1812,7 +1847,7 @@ impl App {
             .collect();
 
         let title = format!(" Memory ({}) ", self.memory_rows.len());
-        let block_list = Block::default()
+        let block_list = Block::default().border_set(ASCII_BORDER)
             .borders(Borders::ALL)
             .title(title)
             .border_style(focus_border(focus_list));
@@ -1830,7 +1865,7 @@ impl App {
             Some(p) => format!(" {} ", p.display()),
             None => " (no selection) ".to_string(),
         };
-        let block_detail = Block::default()
+        let block_detail = Block::default().border_set(ASCII_BORDER)
             .borders(Borders::ALL)
             .title(detail_title)
             .border_style(focus_border(focus_detail));
@@ -1895,7 +1930,7 @@ impl App {
             .collect();
 
         let title = format!(" Skills ({}) ", self.skills_list.len());
-        let block_list = Block::default()
+        let block_list = Block::default().border_set(ASCII_BORDER)
             .borders(Borders::ALL)
             .title(title)
             .border_style(focus_border(focus_list));
@@ -1917,7 +1952,7 @@ impl App {
             Some(sk) => format!(" {} · {} ", sk.agent, sk.path.display()),
             None => " (no selection) ".to_string(),
         };
-        let block_detail = Block::default()
+        let block_detail = Block::default().border_set(ASCII_BORDER)
             .borders(Borders::ALL)
             .title(detail_title)
             .border_style(focus_border(focus_detail));
@@ -1949,7 +1984,7 @@ impl App {
             DashboardMode::Overview => "overview",
             DashboardMode::Sessions => "sessions",
         };
-        let block = Block::default()
+        let block = Block::default().border_set(ASCII_BORDER)
             .borders(Borders::ALL)
             .title(format!(
                 " Dashboard · {} · {} · {} [v] ",
@@ -2907,7 +2942,7 @@ fn draw_agent_bars(
         DashboardUnit::Dollars => " Cost by agent ($) ",
         DashboardUnit::Calls => " Calls/hr by agent ",
     };
-    let block = Block::default()
+    let block = Block::default().border_set(ASCII_BORDER)
         .borders(Borders::ALL)
         .title(title)
         .border_style(Style::default().fg(Color::DarkGray));
@@ -2988,7 +3023,7 @@ fn draw_time_chart(
     } else {
         ""
     };
-    let outer_block = Block::default()
+    let outer_block = Block::default().border_set(ASCII_BORDER)
         .borders(Borders::ALL)
         .title(format!(
             " {} over time · bucket={}{} ",
@@ -3191,7 +3226,7 @@ fn draw_agent_strip(
         Span::styled(peak_label, Style::default().fg(Color::Yellow)),
         Span::raw(" "),
     ]);
-    let block = Block::default()
+    let block = Block::default().border_set(ASCII_BORDER)
         .borders(Borders::TOP)
         .title(title_line)
         .border_style(Style::default().fg(Color::DarkGray));
