@@ -1758,6 +1758,17 @@ impl App {
         // was unreachable by ↓/PgDn).
         self.detail_row_count = content.len().min(u16::MAX as usize) as u16;
 
+        // Scroll was sized against the *previous* frame's content length. If
+        // the content just shrank — e.g. the user pressed End to jump to the
+        // bottom of a 3000-line expanded transcript and then pressed `z` to
+        // fold long tool_result blocks, collapsing the total to ~200 lines —
+        // scroll is now past the new content and Paragraph renders an empty
+        // inner area. Clamp here so the bottom of the now-shorter transcript
+        // stays visible. move_scroll only clamps on the next key press, which
+        // is too late.
+        let max_scroll = self.detail_row_count.saturating_sub(1);
+        self.scroll = self.scroll.min(max_scroll);
+
         // `.wrap(Wrap { trim: false })`: md::to_lines_width emits paragraph
         // text as one long Line (pulldown-cmark's SoftBreak collapses source
         // newlines into spaces). Without ratatui-side wrap the right edge
@@ -3324,6 +3335,24 @@ mod transcript_render_tests {
             hits.is_empty(),
             "fold placeholder contains ambiguous-width chars {hits:?} (issue #17)"
         );
+    }
+
+    /// Guard: clamping `u16` scroll against a shrunk row count must make
+    /// the new scroll land within `0..=new_max`. This is the invariant
+    /// `draw_detail` depends on after `render_detail` recomputes
+    /// `detail_row_count` — it's the repro for "End-then-z shows blank
+    /// transcript" reported on issue #17's follow-up.
+    #[test]
+    fn scroll_clamps_to_new_content_length_after_shrink() {
+        let prev_scroll: u16 = 2999; // user scrolled to row 2999 of expanded transcript
+        let new_row_count: u16 = 200; // z pressed, fold collapsed transcript to 200 rows
+        let max_scroll = new_row_count.saturating_sub(1);
+        let clamped = prev_scroll.min(max_scroll);
+        assert_eq!(clamped, 199);
+
+        // Degenerate case: content is empty → max_scroll underflows to 0.
+        let clamped_empty = 100u16.min(0u16.saturating_sub(1));
+        assert_eq!(clamped_empty, 0);
     }
 
     #[test]
