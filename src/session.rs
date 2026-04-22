@@ -36,8 +36,8 @@ impl TranscriptKind {
             TranscriptKind::User => "USER",
             TranscriptKind::Assistant => "ASSIS",
             TranscriptKind::Thinking => "THINK",
-            TranscriptKind::ToolUse => "TOOL→",
-            TranscriptKind::ToolResult => "TOOL←",
+            TranscriptKind::ToolUse => "TOOL>",
+            TranscriptKind::ToolResult => "TOOL<",
             TranscriptKind::System => "SYS  ",
         }
     }

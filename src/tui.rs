@@ -2397,19 +2397,19 @@ fn is_foldable(kind: TranscriptKind, rendered_rows: usize) -> bool {
 
 fn folded_placeholder(ev: &TranscriptEvent, rows: usize) -> Line<'static> {
     let (tag, color) = match ev.kind {
-        TranscriptKind::ToolResult => ("TOOL←", Color::LightGreen),
+        TranscriptKind::ToolResult => ("TOOL<", Color::LightGreen),
         TranscriptKind::System => ("SYS", Color::Gray),
         TranscriptKind::Thinking => ("THINK", Color::Magenta),
         _ => ("EVENT", Color::White),
     };
     Line::from(vec![
         Span::styled(
-            format!("▌{:<5} ", tag),
+            format!("|{:<5} ", tag),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(short_time(&ev.ts), Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("  · {} lines folded  [+ x]", rows),
+            format!("  - {} lines folded  [+ x]", rows),
             Style::default().fg(Color::Rgb(140, 140, 160)),
         ),
     ])
@@ -2536,7 +2536,7 @@ fn header(
 ) -> Line<'static> {
     let mut spans = vec![
         Span::styled(
-            format!("▌{:<5} ", tag),
+            format!("|{:<5} ", tag),
             Style::default().fg(tag_color).bg(bg).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -2568,7 +2568,7 @@ fn body_line(content: String, style: Style) -> Line<'static> {
 fn header_plain(tag: &'static str, tag_color: Color, ts: &str, suffix: Option<String>) -> Line<'static> {
     let mut spans = vec![
         Span::styled(
-            format!("▌{:<5} ", tag),
+            format!("|{:<5} ", tag),
             Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(short_time(ts), Style::default().fg(Color::DarkGray)),
@@ -2619,7 +2619,7 @@ fn render_tool_use(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: us
         None => (ev.body.clone(), String::new()),
     };
     out.push(header(
-        "TOOL→",
+        "TOOL>",
         Color::Yellow,
         &ev.ts,
         Some(name),
@@ -2665,7 +2665,7 @@ fn render_tool_result(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width:
         Some(n) => (Color::Red, Some(format!("exit={n}")), BG_TOOL_ERR),
         None => (Color::LightGreen, None, BG_TOOL_DEFAULT),
     };
-    out.push(header("TOOL←", tag_color, &ev.ts, suffix, bg, width));
+    out.push(header("TOOL<", tag_color, &ev.ts, suffix, bg, width));
     let default = Color::Rgb(190, 190, 190);
     for line in body.lines() {
         for piece in wrap_to_width(line, width) {
@@ -3244,4 +3244,103 @@ fn short_ts_label(ts: u64) -> String {
         .single()
         .unwrap_or_else(|| Local.timestamp_opt(0, 0).single().unwrap());
     dt.format("%m-%d %H:%M").to_string()
+}
+
+#[cfg(test)]
+mod transcript_render_tests {
+    //! Regression coverage for issue #17 ("按 z 展开/折叠显示乱码").
+    //!
+    //! Root cause: transcript decorators used East-Asian Ambiguous-Width
+    //! characters (U+258C ▌, U+2190 ←, U+2192 →, U+00B7 ·). Under a CJK
+    //! locale these render as 2 cells each; `unicode-width`'s default
+    //! `width()` reports 1 cell. The mismatch compounds through ratatui
+    //! 0.28's `set_stringn` (which has a separate open bug — ratatui
+    //! PR #1764 — around multi-width cells), producing visible overlap
+    //! and stale-fragment artefacts when the fold state toggles and the
+    //! line count changes.
+    //!
+    //! Fix: decorators use ASCII only. These tests guard against a
+    //! regression where someone swaps an ASCII decorator back to a
+    //! pretty-but-ambiguous glyph.
+    use crate::session::{TranscriptEvent, TranscriptKind};
+
+    const AMBIGUOUS_DECORATORS: &[char] = &[
+        '\u{258C}', // ▌ left half block
+        '\u{2190}', // ← leftwards arrow
+        '\u{2192}', // → rightwards arrow
+        '\u{00B7}', // · middle dot
+        '\u{2500}', // ─ box drawings
+        '\u{2502}', // │ box drawings
+    ];
+
+    fn mk_event(kind: TranscriptKind) -> TranscriptEvent {
+        TranscriptEvent {
+            ts: "2026-04-22T00:00:00Z".to_string(),
+            kind,
+            body: "body".to_string(),
+        }
+    }
+
+    fn scan_for_ambiguous(lines: &[ratatui::text::Line<'_>]) -> Vec<(usize, char)> {
+        let mut hits = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            for span in &line.spans {
+                for c in span.content.chars() {
+                    if AMBIGUOUS_DECORATORS.contains(&c) {
+                        hits.push((i, c));
+                    }
+                }
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn headers_do_not_use_ambiguous_width_decorators() {
+        let kinds = [
+            TranscriptKind::User,
+            TranscriptKind::Assistant,
+            TranscriptKind::Thinking,
+            TranscriptKind::ToolUse,
+            TranscriptKind::ToolResult,
+            TranscriptKind::System,
+        ];
+        for k in kinds {
+            let buf = super::render_one_event(&mk_event(k), 80);
+            let hits = scan_for_ambiguous(&buf);
+            assert!(
+                hits.is_empty(),
+                "header for {k:?} contains East-Asian ambiguous-width chars {hits:?} — will corrupt layout under CJK locale (issue #17)"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_placeholder_does_not_use_ambiguous_width_decorators() {
+        let ev = mk_event(TranscriptKind::ToolResult);
+        let line = super::folded_placeholder(&ev, 42);
+        let hits = scan_for_ambiguous(std::slice::from_ref(&line));
+        assert!(
+            hits.is_empty(),
+            "fold placeholder contains ambiguous-width chars {hits:?} (issue #17)"
+        );
+    }
+
+    #[test]
+    fn transcript_kind_labels_are_ascii_only() {
+        for k in [
+            TranscriptKind::User,
+            TranscriptKind::Assistant,
+            TranscriptKind::Thinking,
+            TranscriptKind::ToolUse,
+            TranscriptKind::ToolResult,
+            TranscriptKind::System,
+        ] {
+            let label = k.label();
+            assert!(
+                label.is_ascii(),
+                "TranscriptKind::{k:?}.label() = {label:?} is not ASCII — will misalign under CJK locale"
+            );
+        }
+    }
 }
