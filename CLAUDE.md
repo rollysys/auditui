@@ -10,16 +10,23 @@ This repository is **auditui** (github.com/rollysys/auditui), the active mainlin
 
 ## Architecture
 
-| File | Role |
-|---|---|
-| `src/main.rs` | App entry, CLI flag parsing, view switching |
-| `src/providers/` | Per-agent transcript discovery + parsing (claude / codex / qwen) |
-| `src/session.rs` | Normalized `SessionMeta`, `SessionGroup`, transcript events |
-| `src/cache.rs` | On-disk timeline cache (`~/.claude-audit/_tui_cache/<agent>/<sid>.bin`) |
-| `src/dashboard.rs` | Time-windowed aggregations, per-range compute |
-| `src/memory.rs` / `src/skills.rs` / `src/md.rs` | Memory/skills discovery + markdown rendering |
-| `src/tui.rs` | Layout, input handling, detail rendering |
-| `src/cost.rs` | Per-model pricing table |
+Cargo workspace with two crates:
+
+- **`core/`** (`auditui-core` lib) — shared data layer. Any future web frontend (e.g. a future launcher UI) depends on this.
+- **`tui/`** (`auditui` bin) — the Ratatui terminal UI. Depends on `core`.
+
+| File | Crate | Role |
+|---|---|---|
+| `tui/src/main.rs` | tui | App entry, CLI flag parsing, view switching |
+| `tui/src/tui.rs` | tui | Layout, input handling, detail rendering |
+| `tui/src/md.rs` | tui | Markdown → `ratatui::Line/Span` (TUI-only) |
+| `tui/src/update.rs` | tui | Background self-update check against GitHub releases |
+| `core/src/providers/` | core | Per-agent transcript discovery + parsing (claude / codex / hermes / qwen) |
+| `core/src/session.rs` | core | Normalized `SessionMeta`, `SessionGroup`, transcript events |
+| `core/src/cache.rs` | core | On-disk timeline cache (`~/.claude-audit/_tui_cache/<agent>/<sid>.bin`) |
+| `core/src/dashboard.rs` | core | Time-windowed aggregations, per-range compute |
+| `core/src/memory.rs` / `core/src/skills.rs` | core | Memory / skills discovery |
+| `core/src/cost.rs` | core | Per-model pricing table |
 
 ## Common commands
 
