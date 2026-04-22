@@ -68,6 +68,11 @@ const PRICING: &[(&str, Price)] = &[
     ("qwen3-coder",       Price { inp: 0.548, out: 2.192, cw5m: 0.0, cw1h: 0.0, cr: 0.137 }),
     ("qwen-plus",         Price { inp: 0.548, out: 2.192, cw5m: 0.0, cw1h: 0.0, cr: 0.137 }),
     ("qwen-max",          Price { inp: 2.740, out: 10.96, cw5m: 0.0, cw1h: 0.0, cr: 0.685 }),
+    // Local / open-weights inference served by Hermes (LM Studio, llama.cpp,
+    // vllm, etc.). No metered cost to the user.
+    ("gemma",             Price { inp: 0.0,   out: 0.0,   cw5m: 0.0, cw1h: 0.0, cr: 0.0 }),
+    ("llama",             Price { inp: 0.0,   out: 0.0,   cw5m: 0.0, cw1h: 0.0, cr: 0.0 }),
+    (".gguf",             Price { inp: 0.0,   out: 0.0,   cw5m: 0.0, cw1h: 0.0, cr: 0.0 }),
 ];
 
 pub const DEFAULT_CTX_WINDOW: u64 = 200_000;

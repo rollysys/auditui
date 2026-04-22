@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod hermes;
 pub mod qwen;
 
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub enum Agent {
     Claude,
     Codex,
+    Hermes,
     Qwen,
 }
 
@@ -17,6 +19,7 @@ impl Agent {
         match self {
             Agent::Claude => "CLA",
             Agent::Codex => "COD",
+            Agent::Hermes => "HER",
             Agent::Qwen => "QWN",
         }
     }

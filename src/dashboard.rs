@@ -348,6 +348,7 @@ fn agent_key(a: Agent) -> &'static str {
     match a {
         Agent::Claude => "claude",
         Agent::Codex => "codex",
+        Agent::Hermes => "hermes",
         Agent::Qwen => "qwen",
     }
 }

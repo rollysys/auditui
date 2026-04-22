@@ -67,6 +67,7 @@ pub fn index_all() -> Vec<SessionMeta> {
     let mut all = Vec::new();
     all.extend(providers::claude::list_sessions());
     all.extend(providers::codex::list_sessions());
+    all.extend(providers::hermes::list_sessions());
     all.extend(providers::qwen::list_sessions());
     all.sort_by(|a, b| b.last_active_ts.cmp(&a.last_active_ts));
     all
@@ -144,6 +145,7 @@ fn agent_tag(a: Agent) -> &'static str {
     match a {
         Agent::Claude => "claude",
         Agent::Codex => "codex",
+        Agent::Hermes => "hermes",
         Agent::Qwen => "qwen",
     }
 }
@@ -152,6 +154,7 @@ pub fn read_transcript(meta: &SessionMeta) -> Result<Vec<TranscriptEvent>> {
     match meta.agent {
         Agent::Claude => providers::claude::read_transcript(&meta.path),
         Agent::Codex => providers::codex::read_transcript(&meta.path),
+        Agent::Hermes => providers::hermes::read_transcript(&meta.path),
         Agent::Qwen => providers::qwen::read_transcript(&meta.path),
     }
 }
@@ -164,6 +167,7 @@ fn extract_events(meta: &SessionMeta) -> Vec<TokenEvent> {
     match meta.agent {
         Agent::Claude => providers::claude::extract_events(&meta.path),
         Agent::Codex => providers::codex::extract_events(&meta.path),
+        Agent::Hermes => providers::hermes::extract_events(&meta.path),
         Agent::Qwen => providers::qwen::extract_events(&meta.path),
     }
 }

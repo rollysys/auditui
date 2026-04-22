@@ -27,6 +27,7 @@ unicode-width = "0.1"
 regex = "1"
 pulldown-cmark = "0.13.3"
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.release]
 lto = "thin"
