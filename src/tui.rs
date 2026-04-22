@@ -492,6 +492,15 @@ impl App {
 
     fn run<B: ratatui::backend::Backend>(&mut self, term: &mut Terminal<B>) -> Result<()> {
         loop {
+            // Force a full redraw every tick. `Terminal::clear()` wipes the
+            // terminal AND resets ratatui's previous-frame buffer, so the
+            // next diff treats every cell as new and emits it explicitly.
+            // This is the hammer, but it sidesteps the class of bugs where
+            // ratatui's diff thinks a cell is clean while the terminal
+            // actually shows stale content from a wide-glyph paint. Cost at
+            // ~25 Hz is negligible for a 150x50 viewport; any flicker is
+            // imperceptible on modern terminals.
+            term.clear()?;
             term.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(40))? {
                 if let Event::Key(key) = event::read()? {
