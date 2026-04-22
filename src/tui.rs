@@ -2480,9 +2480,60 @@ fn display_width(s: &str) -> usize {
         .sum()
 }
 
+/// Width used to expand `\t` into spaces. 8 matches the default most
+/// terminals use and makes Claude's tab-separated `Read` output
+/// (`1\t<content>`, `12\t<content>`) align at the same content column.
+const TAB_WIDTH: usize = 8;
+
+/// Normalize a line for display: expand tabs to spaces honoring tab stops,
+/// drop other C0 control characters.
+///
+/// **Required** — if a raw `\t` reaches ratatui's buffer it gets Printed
+/// verbatim to the terminal, which interprets it as "jump to next tab
+/// stop". Ratatui's diff doesn't know the cursor drifted, so the cells
+/// skipped by the tab are never written and retain the previous frame's
+/// glyphs. Visible symptom: residue chars between line numbers and
+/// content in `Read` tool output (`1 A ( <!DOCTYPE html>` — the `A (`
+/// being whatever was at those cells in the prior frame).
+fn sanitize_for_display(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut col: usize = 0;
+    for ch in s.chars() {
+        match ch {
+            '\t' => {
+                let target = (col / TAB_WIDTH + 1) * TAB_WIDTH;
+                while col < target {
+                    out.push(' ');
+                    col += 1;
+                }
+            }
+            '\r' | '\x07' | '\x08' | '\x0b' | '\x0c' => {
+                // C0 controls the terminal would interpret visually (CR,
+                // BEL, BS, VT, FF). Drop — `.lines()` already stripped LF.
+            }
+            '\x1b' => {
+                // An embedded ESC would get Printed verbatim, and the
+                // terminal would read the following bytes as a CSI/OSC
+                // sequence (colour flips, cursor moves, window title
+                // changes, etc.). Replace with `?` so something is
+                // visible without hijacking the terminal.
+                out.push('?');
+                col += 1;
+            }
+            _ => {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                out.push(ch);
+                col += cw.max(1);
+            }
+        }
+    }
+    out
+}
+
 fn wrap_to_width(s: &str, width: usize) -> Vec<String> {
+    let s = sanitize_for_display(s);
     if width == 0 {
-        return vec![s.to_string()];
+        return vec![s];
     }
     if s.is_empty() {
         return vec![String::new()];
@@ -2506,6 +2557,47 @@ fn wrap_to_width(s: &str, width: usize) -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_for_display;
+
+    #[test]
+    fn expands_tab_to_next_stop() {
+        // 1-digit line number: `1\t<...>` → `1` at col 0, tab advances to col 8.
+        assert_eq!(
+            sanitize_for_display("1\t<!DOCTYPE html>"),
+            "1       <!DOCTYPE html>"
+        );
+        // 2-digit: `12\t<...>` → `12` at cols 0-1, tab advances to col 8.
+        assert_eq!(sanitize_for_display("12\t<html>"), "12      <html>");
+    }
+
+    #[test]
+    fn multiple_tabs_align_at_independent_stops() {
+        assert_eq!(sanitize_for_display("a\tb\tc"), "a       b       c");
+    }
+
+    #[test]
+    fn drops_c0_controls_that_confuse_the_terminal() {
+        assert_eq!(sanitize_for_display("line\rhidden"), "linehidden");
+        assert_eq!(sanitize_for_display("x\x08y"), "xy");
+    }
+
+    #[test]
+    fn embedded_esc_becomes_question_mark_not_an_ansi_sequence() {
+        assert_eq!(sanitize_for_display("foo\x1b[31mbar"), "foo?[31mbar");
+    }
+
+    #[test]
+    fn leaves_cjk_and_ascii_alone() {
+        assert_eq!(
+            sanitize_for_display("把项目说明好好写写"),
+            "把项目说明好好写写"
+        );
+        assert_eq!(sanitize_for_display("hello world"), "hello world");
+    }
 }
 
 
