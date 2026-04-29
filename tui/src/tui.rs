@@ -1604,7 +1604,7 @@ impl App {
                         .unwrap_or_else(|| "-".to_string());
                     let first_prompt = g
                         .members
-                        .last()
+                        .first()
                         .and_then(|m| m.prompt.clone())
                         .unwrap_or_default()
                         .replace('\n', " ");
