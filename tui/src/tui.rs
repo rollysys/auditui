@@ -253,6 +253,40 @@ enum FoldMode {
     Expanded,
 }
 
+/// View density for the session preview pane. Orthogonal to FoldMode:
+/// only consulted in `Full`; the other two modes set their own per-event
+/// truncation policy that overrides the per-event fold logic.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    /// Honor FoldMode: long tool_result / system / thinking can fold,
+    /// everything else fully shown.
+    Full,
+    /// Every event truncated to at most 2 screen rows (head with `…` if
+    /// content overflows). Goal: scan session rhythm at a glance.
+    TwoLine,
+    /// Show the conversation: user / assistant fully expanded, every other
+    /// kind collapsed to a single placeholder. Goal: read what the user saw.
+    Compact,
+}
+
+impl ViewMode {
+    fn next(self) -> Self {
+        match self {
+            ViewMode::Full => ViewMode::TwoLine,
+            ViewMode::TwoLine => ViewMode::Compact,
+            ViewMode::Compact => ViewMode::Full,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ViewMode::Full => "full",
+            ViewMode::TwoLine => "two-line",
+            ViewMode::Compact => "compact",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct MemoryRow {
     label: String,
@@ -310,6 +344,9 @@ struct App {
     detail_row_count: u16,
     /// Global fold state for the transcript detail pane.
     fold_mode: FoldMode,
+    /// Per-event display density for the transcript detail pane.
+    /// Initialized to TwoLine for fast session-overview scanning.
+    view_mode: ViewMode,
     /// Per-session "explicitly-expanded" event indices. Persists across
     /// session switches so flipping back to a session preserves your
     /// per-event choices. Only consulted in FoldMode::Smart.
@@ -426,6 +463,7 @@ impl App {
             update_state,
             detail_row_count: 0,
             fold_mode: FoldMode::Smart,
+            view_mode: ViewMode::TwoLine,
             fold_overrides: HashMap::new(),
             detail_event_offsets: Vec::new(),
         };
@@ -503,6 +541,29 @@ impl App {
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         return Ok(());
+                    }
+                    // Ctrl-N / Ctrl-P toggle List <-> Detail focus in any
+                    // pane that has a list/detail split. Pre-empted before
+                    // handle_key so plain `n`/`p` keep their meaning.
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(
+                            key.code,
+                            KeyCode::Char('n')
+                                | KeyCode::Char('N')
+                                | KeyCode::Char('p')
+                                | KeyCode::Char('P')
+                        )
+                        && !matches!(self.mode, Mode::Search)
+                        && matches!(
+                            self.view,
+                            View::Sessions | View::Memory | View::Skills
+                        )
+                    {
+                        self.focus = match self.focus {
+                            Focus::List => Focus::Detail,
+                            Focus::Detail => Focus::List,
+                        };
+                        continue;
                     }
                     if matches!(self.mode, Mode::Search) {
                         self.handle_key_search(key.code);
@@ -709,6 +770,10 @@ impl App {
                 Focus::List => self.move_list(code),
                 Focus::Detail => self.move_scroll(code),
             },
+            KeyCode::Char('V') => {
+                self.view_mode = self.view_mode.next();
+                self.status = format!("view: {}", self.view_mode.label());
+            }
             KeyCode::Char('z') | KeyCode::Char('Z') => {
                 self.fold_mode = match self.fold_mode {
                     FoldMode::Smart => FoldMode::Expanded,
@@ -1727,6 +1792,7 @@ impl App {
                 events.as_ref(),
                 inner_width,
                 self.fold_mode,
+                self.view_mode,
                 overrides_ref,
             );
             if let Some((pj_sid, pj_idx)) = self.pending_jump.clone() {
@@ -2398,9 +2464,11 @@ fn is_foldable(kind: TranscriptKind, rendered_rows: usize) -> bool {
 fn folded_placeholder(ev: &TranscriptEvent, rows: usize) -> Line<'static> {
     let (tag, color) = match ev.kind {
         TranscriptKind::ToolResult => ("TOOL←", Color::LightGreen),
+        TranscriptKind::ToolUse => ("TOOL→", Color::LightYellow),
         TranscriptKind::System => ("SYS", Color::Gray),
         TranscriptKind::Thinking => ("THINK", Color::Magenta),
-        _ => ("EVENT", Color::White),
+        TranscriptKind::User => ("USER", Color::Cyan),
+        TranscriptKind::Assistant => ("ASSIS", Color::White),
     };
     Line::from(vec![
         Span::styled(
@@ -2413,6 +2481,23 @@ fn folded_placeholder(ev: &TranscriptEvent, rows: usize) -> Line<'static> {
             Style::default().fg(Color::Rgb(140, 140, 160)),
         ),
     ])
+}
+
+/// Truncate an event's rendered lines to at most 2. If the original had
+/// 3+ lines, mark the second with a trailing `…` so the user knows the
+/// event was clipped.
+fn truncate_to_two_lines(buf: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    if buf.len() <= 2 {
+        return buf;
+    }
+    let mut head: Vec<Line<'static>> = buf.into_iter().take(2).collect();
+    if let Some(last) = head.last_mut() {
+        last.spans.push(Span::styled(
+            " …",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    head
 }
 
 fn line_is_blank(l: &Line<'_>) -> bool {
@@ -2432,6 +2517,7 @@ fn render_detail(
     events: &[TranscriptEvent],
     inner_width: u16,
     fold_mode: FoldMode,
+    view_mode: ViewMode,
     overrides: &HashSet<usize>,
 ) -> (Vec<Line<'static>>, Vec<u16>) {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(events.len() * 4);
@@ -2443,15 +2529,24 @@ fn render_detail(
         offsets.push(lines.len().min(u16::MAX as usize) as u16);
 
         let buf = render_one_event(ev, w);
-        let foldable = is_foldable(ev.kind, buf.len());
-        let should_fold = match fold_mode {
-            FoldMode::Expanded => false,
-            FoldMode::Smart => foldable && !overrides.contains(&i),
-        };
-        let event_lines: Vec<Line<'static>> = if should_fold {
-            vec![folded_placeholder(ev, buf.len())]
-        } else {
-            buf
+        let event_lines: Vec<Line<'static>> = match view_mode {
+            ViewMode::TwoLine => truncate_to_two_lines(buf),
+            ViewMode::Compact => match ev.kind {
+                TranscriptKind::User | TranscriptKind::Assistant => buf,
+                _ => vec![folded_placeholder(ev, buf.len())],
+            },
+            ViewMode::Full => {
+                let foldable = is_foldable(ev.kind, buf.len());
+                let should_fold = match fold_mode {
+                    FoldMode::Expanded => false,
+                    FoldMode::Smart => foldable && !overrides.contains(&i),
+                };
+                if should_fold {
+                    vec![folded_placeholder(ev, buf.len())]
+                } else {
+                    buf
+                }
+            }
         };
 
         for line in event_lines {
