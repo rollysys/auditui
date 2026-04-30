@@ -81,7 +81,7 @@ pub struct SessionGroup {
     pub key: String,              // "{agent}|{cwd}"
     pub agent: Agent,
     pub cwd: Option<String>,
-    pub members: Vec<SessionMeta>, // sorted by started_at_ts ASC
+    pub members: Vec<SessionMeta>, // sorted by last_active_ts DESC
     pub latest_active_ts: u64,
 }
 
@@ -92,7 +92,7 @@ impl SessionGroup {
 // Group sessions by same agent + same cwd, splitting when the gap between
 // consecutive members (next.started_at_ts − prev.last_active_ts) exceeds
 // `gap_secs`. Returns groups sorted by latest_active_ts DESC; members within
-// each group sorted by started_at_ts ASC.
+// each group sorted by last_active_ts DESC.
 pub fn group_sessions(sessions: &[SessionMeta], gap_secs: u64) -> Vec<SessionGroup> {
     use std::collections::BTreeMap;
     // bucket by (agent_tag, cwd); remember agent from first entry
@@ -130,8 +130,11 @@ pub fn group_sessions(sessions: &[SessionMeta], gap_secs: u64) -> Vec<SessionGro
     out
 }
 
-fn finalize_group(agent: &Agent, cwd: &str, members: Vec<SessionMeta>) -> SessionGroup {
-    let latest = members.iter().map(|m| m.last_active_ts).max().unwrap_or(0);
+fn finalize_group(agent: &Agent, cwd: &str, mut members: Vec<SessionMeta>) -> SessionGroup {
+    // Sort within group by last activity time descending so the TUI list
+    // shows the most recently active session first.
+    members.sort_by(|a, b| b.last_active_ts.cmp(&a.last_active_ts));
+    let latest = members[0].last_active_ts;
     SessionGroup {
         key: format!("{}|{}", agent_tag(*agent), cwd),
         agent: *agent,
