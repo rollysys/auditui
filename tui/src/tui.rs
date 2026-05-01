@@ -261,19 +261,23 @@ enum ViewMode {
     /// Honor FoldMode: long tool_result / system / thinking can fold,
     /// everything else fully shown.
     Full,
-    /// Every event truncated to at most 2 screen rows (head with `…` if
-    /// content overflows). Goal: scan session rhythm at a glance.
-    TwoLine,
+    /// Every event truncated to at most 4 screen rows (head with `…` if
+    /// content overflows). Goal: scan session rhythm at a glance while
+    /// still fitting a tool_use header + first JSON arg line.
+    FewLine,
     /// Show the conversation: user / assistant fully expanded, every other
     /// kind collapsed to a single placeholder. Goal: read what the user saw.
     Compact,
 }
 
+/// Per-event row cap for ViewMode::FewLine.
+const FEW_LINE_CAP: usize = 4;
+
 impl ViewMode {
     fn next(self) -> Self {
         match self {
-            ViewMode::Full => ViewMode::TwoLine,
-            ViewMode::TwoLine => ViewMode::Compact,
+            ViewMode::Full => ViewMode::FewLine,
+            ViewMode::FewLine => ViewMode::Compact,
             ViewMode::Compact => ViewMode::Full,
         }
     }
@@ -281,7 +285,7 @@ impl ViewMode {
     fn label(self) -> &'static str {
         match self {
             ViewMode::Full => "full",
-            ViewMode::TwoLine => "two-line",
+            ViewMode::FewLine => "few-line",
             ViewMode::Compact => "compact",
         }
     }
@@ -463,7 +467,7 @@ impl App {
             update_state,
             detail_row_count: 0,
             fold_mode: FoldMode::Smart,
-            view_mode: ViewMode::TwoLine,
+            view_mode: ViewMode::FewLine,
             fold_overrides: HashMap::new(),
             detail_event_offsets: Vec::new(),
         };
@@ -2483,14 +2487,13 @@ fn folded_placeholder(ev: &TranscriptEvent, rows: usize) -> Line<'static> {
     ])
 }
 
-/// Truncate an event's rendered lines to at most 2. If the original had
-/// 3+ lines, mark the second with a trailing `…` so the user knows the
-/// event was clipped.
-fn truncate_to_two_lines(buf: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    if buf.len() <= 2 {
+/// Truncate an event's rendered lines to at most `cap` rows. If clipped,
+/// the last surviving row gets a trailing `…` so the user knows.
+fn truncate_to_max_lines(buf: Vec<Line<'static>>, cap: usize) -> Vec<Line<'static>> {
+    if buf.len() <= cap {
         return buf;
     }
-    let mut head: Vec<Line<'static>> = buf.into_iter().take(2).collect();
+    let mut head: Vec<Line<'static>> = buf.into_iter().take(cap).collect();
     if let Some(last) = head.last_mut() {
         last.spans.push(Span::styled(
             " …",
@@ -2530,7 +2533,7 @@ fn render_detail(
 
         let buf = render_one_event(ev, w);
         let event_lines: Vec<Line<'static>> = match view_mode {
-            ViewMode::TwoLine => truncate_to_two_lines(buf),
+            ViewMode::FewLine => truncate_to_max_lines(buf, FEW_LINE_CAP),
             ViewMode::Compact => match ev.kind {
                 TranscriptKind::User | TranscriptKind::Assistant => buf,
                 _ => vec![folded_placeholder(ev, buf.len())],
@@ -2712,6 +2715,9 @@ const BG_TOOL_USE: Color = Color::Rgb(40, 32, 14);
 const BG_TOOL_OK: Color = Color::Rgb(16, 34, 20);
 const BG_TOOL_ERR: Color = Color::Rgb(48, 18, 18);
 const BG_TOOL_DEFAULT: Color = Color::Rgb(20, 32, 26);
+const BG_USER: Color = Color::Rgb(14, 22, 36);
+const BG_THINK: Color = Color::Rgb(28, 18, 36);
+const BG_SYS: Color = Color::Rgb(28, 28, 28);
 
 fn header(
     tag: &'static str,
@@ -2752,23 +2758,8 @@ fn body_line(content: String, style: Style) -> Line<'static> {
     Line::from(Span::styled(content, style))
 }
 
-fn header_plain(tag: &'static str, tag_color: Color, ts: &str, suffix: Option<String>) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled(
-            format!("▌{:<5} ", tag),
-            Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(short_time(ts), Style::default().fg(Color::DarkGray)),
-    ];
-    if let Some(s) = suffix {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(s, Style::default().fg(Color::DarkGray)));
-    }
-    Line::from(spans)
-}
-
 fn render_user(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: usize) {
-    out.push(header_plain("USER", Color::LightBlue, &ev.ts, None));
+    out.push(header("USER", Color::LightBlue, &ev.ts, None, BG_USER, width));
     // User prompts occasionally include markdown — ``` fences, lists, code —
     // so pipe through the same renderer Memory/Skills uses. Empty body
     // tolerated (happens with tool-result-only user turns the parser has
@@ -2788,7 +2779,7 @@ fn render_assistant(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: u
 }
 
 fn render_thinking(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: usize) {
-    out.push(header_plain("THINK", Color::Magenta, &ev.ts, None));
+    out.push(header("THINK", Color::Magenta, &ev.ts, None, BG_THINK, width));
     let style = Style::default()
         .fg(Color::Rgb(160, 150, 200))
         .add_modifier(Modifier::ITALIC);
@@ -2862,7 +2853,7 @@ fn render_tool_result(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width:
 }
 
 fn render_system(ev: &TranscriptEvent, out: &mut Vec<Line<'static>>, width: usize) {
-    out.push(header_plain("SYS", Color::Gray, &ev.ts, None));
+    out.push(header("SYS", Color::Gray, &ev.ts, None, BG_SYS, width));
     let style = Style::default().fg(Color::DarkGray);
     let inner_w = width.saturating_sub(2).max(1);
     for line in ev.body.lines() {
