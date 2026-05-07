@@ -351,6 +351,9 @@ struct App {
     /// Per-event display density for the transcript detail pane.
     /// Initialized to TwoLine for fast session-overview scanning.
     view_mode: ViewMode,
+    /// Vim-style `gg` is a two-keystroke motion. After the first `g` we
+    /// flip this to true; the second `g` (or any non-`g` key) consumes it.
+    pending_g: bool,
     /// Per-session "explicitly-expanded" event indices. Persists across
     /// session switches so flipping back to a session preserves your
     /// per-event choices. Only consulted in FoldMode::Smart.
@@ -468,6 +471,7 @@ impl App {
             detail_row_count: 0,
             fold_mode: FoldMode::Smart,
             view_mode: ViewMode::FewLine,
+            pending_g: false,
             fold_overrides: HashMap::new(),
             detail_event_offsets: Vec::new(),
         };
@@ -569,6 +573,24 @@ impl App {
                         };
                         continue;
                     }
+                    // Vim Ctrl-u/d (half-screen, ±5) and Ctrl-b/f
+                    // (full-screen, ±15). Apply to whatever pane the
+                    // current focus owns; skip while typing in search.
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !matches!(self.mode, Mode::Search)
+                    {
+                        let delta: Option<i32> = match key.code {
+                            KeyCode::Char('u') | KeyCode::Char('U') => Some(-5),
+                            KeyCode::Char('d') | KeyCode::Char('D') => Some(5),
+                            KeyCode::Char('b') | KeyCode::Char('B') => Some(-15),
+                            KeyCode::Char('f') | KeyCode::Char('F') => Some(15),
+                            _ => None,
+                        };
+                        if let Some(d) = delta {
+                            self.vim_relative(d);
+                            continue;
+                        }
+                    }
                     if matches!(self.mode, Mode::Search) {
                         self.handle_key_search(key.code);
                     } else {
@@ -629,6 +651,20 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode) {
+        // Vim `gg` two-key motion. The first `g` arms `pending_g`; the
+        // second consumes it and jumps the focused pane to the top. Any
+        // non-`g` key cancels the pending state. Handled here (before the
+        // global shortcut match) so it works in every view.
+        if matches!(code, KeyCode::Char('g')) {
+            if self.pending_g {
+                self.pending_g = false;
+                self.vim_jump_top();
+            } else {
+                self.pending_g = true;
+            }
+            return;
+        }
+        self.pending_g = false;
         // View-independent shortcuts
         match code {
             KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -649,7 +685,9 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Char('k') | KeyCode::Char('K') => {
+            KeyCode::Char('K') => {
+                // Lowercase `k` is a vim motion (move up); only capital K
+                // switches to Skills view to free that key for navigation.
                 if self.view != View::Skills {
                     self.view = View::Skills;
                     self.load_skills_if_needed();
@@ -690,7 +728,9 @@ impl App {
                 self.status = format!("auto-refresh: {}", format_refresh(next));
                 return;
             }
-            KeyCode::Char('0') => {
+            KeyCode::Char('R') => {
+                // `R` (capital) disables auto-refresh; lowercase `r` is the
+                // existing manual refresh trigger. `0` is now a vim motion.
                 self.refresh_secs.store(0, Ordering::Relaxed);
                 self.status = format!("auto-refresh: {}", format_refresh(0));
                 return;
@@ -774,6 +814,21 @@ impl App {
                 Focus::List => self.move_list(code),
                 Focus::Detail => self.move_scroll(code),
             },
+            // Vim motions. `gg` is handled in handle_key so any view can use it.
+            KeyCode::Char('j') => match self.focus {
+                Focus::List => self.move_list(KeyCode::Down),
+                Focus::Detail => self.move_scroll(KeyCode::Down),
+            },
+            KeyCode::Char('k') => match self.focus {
+                Focus::List => self.move_list(KeyCode::Up),
+                Focus::Detail => self.move_scroll(KeyCode::Up),
+            },
+            KeyCode::Char('G') => self.vim_jump_bottom(),
+            KeyCode::Char('0') => self.vim_jump_top(),
+            // n / N step through search hits. Reuses search.list_state's
+            // current selection so the popup and the n/N drive the same cursor.
+            KeyCode::Char('n') => self.jump_search_rel(1),
+            KeyCode::Char('N') => self.jump_search_rel(-1),
             KeyCode::Char('V') => {
                 self.view_mode = self.view_mode.next();
                 self.status = format!("view: {}", self.view_mode.label());
@@ -845,6 +900,16 @@ impl App {
                 Focus::List => self.move_memory_list(code),
                 Focus::Detail => self.move_memory_scroll(code),
             },
+            KeyCode::Char('j') => match self.focus {
+                Focus::List => self.move_memory_list(KeyCode::Down),
+                Focus::Detail => self.move_memory_scroll(KeyCode::Down),
+            },
+            KeyCode::Char('k') => match self.focus {
+                Focus::List => self.move_memory_list(KeyCode::Up),
+                Focus::Detail => self.move_memory_scroll(KeyCode::Up),
+            },
+            KeyCode::Char('G') => self.vim_jump_bottom(),
+            KeyCode::Char('0') => self.vim_jump_top(),
             KeyCode::Enter => {
                 self.focus = Focus::Detail;
                 self.load_memory_content();
@@ -869,6 +934,16 @@ impl App {
                 Focus::List => self.move_skills_list(code),
                 Focus::Detail => self.move_skills_scroll(code),
             },
+            KeyCode::Char('j') => match self.focus {
+                Focus::List => self.move_skills_list(KeyCode::Down),
+                Focus::Detail => self.move_skills_scroll(KeyCode::Down),
+            },
+            KeyCode::Char('k') => match self.focus {
+                Focus::List => self.move_skills_list(KeyCode::Up),
+                Focus::Detail => self.move_skills_scroll(KeyCode::Up),
+            },
+            KeyCode::Char('G') => self.vim_jump_bottom(),
+            KeyCode::Char('0') => self.vim_jump_top(),
             KeyCode::Enter => {
                 self.focus = Focus::Detail;
                 self.load_skill_content();
@@ -1066,27 +1141,33 @@ impl App {
 
     fn handle_key_dashboard(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Left => {
+            KeyCode::Left | KeyCode::Char('h') => {
                 self.range = prev_range(self.range);
                 self.stats = None;
                 self.stats_for = None;
                 self.dashboard_scroll = 0;
                 self.load_stats_if_needed();
             }
-            KeyCode::Right => {
+            KeyCode::Right | KeyCode::Char('l') => {
                 self.range = next_range(self.range);
                 self.stats = None;
                 self.stats_for = None;
                 self.dashboard_scroll = 0;
                 self.load_stats_if_needed();
             }
+            KeyCode::Char('j') => self.dashboard_scroll = self.dashboard_scroll.saturating_add(1),
+            KeyCode::Char('k') => self.dashboard_scroll = self.dashboard_scroll.saturating_sub(1),
+            KeyCode::Char('G') => self.vim_jump_bottom(),
+            KeyCode::Char('0') => self.vim_jump_top(),
             KeyCode::Char('u') | KeyCode::Char('U') => {
                 self.dashboard_unit = match self.dashboard_unit {
                     DashboardUnit::Dollars => DashboardUnit::Calls,
                     DashboardUnit::Calls => DashboardUnit::Dollars,
                 };
             }
-            KeyCode::Char('v') | KeyCode::Char('V') => {
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                // `t` toggles dashboard mode; lowercase `v` and `V` are now
+                // free for vim-style motions (cf. ViewMode in Sessions view).
                 self.dashboard_mode = match self.dashboard_mode {
                     DashboardMode::Overview => DashboardMode::Sessions,
                     DashboardMode::Sessions => DashboardMode::Overview,
@@ -1161,6 +1242,123 @@ impl App {
             _ => cur,
         };
         self.scroll = next;
+    }
+
+    // ----- Vim-style relative motions (Ctrl-u/d/b/f use these) -----
+
+    fn move_list_by(&mut self, delta: i32) {
+        let n = self.list_rows().len();
+        if n == 0 { return; }
+        let cur = self.list_state.selected().unwrap_or(0) as i32;
+        let next = (cur + delta).clamp(0, n as i32 - 1) as usize;
+        if Some(next) != self.list_state.selected() {
+            self.list_state.select(Some(next));
+            self.request_preview_for_selected();
+        }
+    }
+
+    fn move_scroll_by(&mut self, delta: i32) {
+        let max = self.detail_row_count.saturating_sub(1) as i32;
+        let cur = self.scroll as i32;
+        let next = (cur + delta).clamp(0, max).max(0) as u16;
+        self.scroll = next;
+    }
+
+    fn move_memory_list_by(&mut self, delta: i32) {
+        let n = self.memory_rows.len();
+        if n == 0 { return; }
+        let cur = self.memory_list_state.selected().unwrap_or(0) as i32;
+        let next = (cur + delta).clamp(0, n as i32 - 1) as usize;
+        if Some(next) != self.memory_list_state.selected() {
+            self.memory_list_state.select(Some(next));
+            self.load_memory_content();
+        }
+    }
+
+    fn move_memory_scroll_by(&mut self, delta: i32) {
+        let cur = self.memory_scroll as i32;
+        let next = (cur + delta).max(0) as u16;
+        self.memory_scroll = next;
+    }
+
+    fn move_skills_list_by(&mut self, delta: i32) {
+        let n = self.skills_list.len();
+        if n == 0 { return; }
+        let cur = self.skills_list_state.selected().unwrap_or(0) as i32;
+        let next = (cur + delta).clamp(0, n as i32 - 1) as usize;
+        if Some(next) != self.skills_list_state.selected() {
+            self.skills_list_state.select(Some(next));
+            self.load_skill_content();
+        }
+    }
+
+    fn move_skills_scroll_by(&mut self, delta: i32) {
+        let cur = self.skills_scroll as i32;
+        let next = (cur + delta).max(0) as u16;
+        self.skills_scroll = next;
+    }
+
+    /// Apply a relative motion to whichever list/scroll the current focus
+    /// owns. Used by vim Ctrl-u/d (half-screen, ±5) and Ctrl-b/f (full-
+    /// screen, ±15) — fixed step counts rather than true viewport-relative
+    /// because PageUp/PageDown in this TUI also use fixed steps.
+    fn vim_relative(&mut self, delta: i32) {
+        match self.view {
+            View::Sessions => match self.focus {
+                Focus::List => self.move_list_by(delta),
+                Focus::Detail => self.move_scroll_by(delta),
+            },
+            View::Dashboard => {
+                let cur = self.dashboard_scroll as i32;
+                self.dashboard_scroll = (cur + delta).max(0) as u16;
+            }
+            View::Memory => match self.focus {
+                Focus::List => self.move_memory_list_by(delta),
+                Focus::Detail => self.move_memory_scroll_by(delta),
+            },
+            View::Skills => match self.focus {
+                Focus::List => self.move_skills_list_by(delta),
+                Focus::Detail => self.move_skills_scroll_by(delta),
+            },
+        }
+    }
+
+    /// Apply a "jump to top" to whichever pane the current focus owns.
+    fn vim_jump_top(&mut self) {
+        match self.view {
+            View::Sessions => match self.focus {
+                Focus::List => self.move_list(KeyCode::Home),
+                Focus::Detail => self.move_scroll(KeyCode::Home),
+            },
+            View::Dashboard => self.dashboard_scroll = 0,
+            View::Memory => match self.focus {
+                Focus::List => self.move_memory_list(KeyCode::Home),
+                Focus::Detail => self.memory_scroll = 0,
+            },
+            View::Skills => match self.focus {
+                Focus::List => self.move_skills_list(KeyCode::Home),
+                Focus::Detail => self.skills_scroll = 0,
+            },
+        }
+    }
+
+    /// Apply a "jump to bottom" to whichever pane the current focus owns.
+    fn vim_jump_bottom(&mut self) {
+        match self.view {
+            View::Sessions => match self.focus {
+                Focus::List => self.move_list(KeyCode::End),
+                Focus::Detail => self.move_scroll(KeyCode::End),
+            },
+            View::Dashboard => self.dashboard_scroll = u16::MAX,
+            View::Memory => match self.focus {
+                Focus::List => self.move_memory_list(KeyCode::End),
+                Focus::Detail => self.memory_scroll = u16::MAX,
+            },
+            View::Skills => match self.focus {
+                Focus::List => self.move_skills_list(KeyCode::End),
+                Focus::Detail => self.skills_scroll = u16::MAX,
+            },
+        }
     }
 
     fn current_transcript(&self) -> Option<Arc<Vec<TranscriptEvent>>> {
@@ -1344,6 +1542,22 @@ impl App {
         self.transcript_for = Some(hit.sid.clone());
         self.pending_preview = None;
         self.pending_jump = Some((hit.sid, hit.event_index));
+    }
+
+    /// Vim-style `n`/`N` to step forward/back through search hits. Reuses
+    /// the search popup's `list_state` selection as the cursor — pressing
+    /// `n` from the Sessions view advances even when the popup is closed.
+    fn jump_search_rel(&mut self, delta: i32) {
+        let n = self.search.results.len();
+        if n == 0 {
+            self.status = "no search hits".to_string();
+            return;
+        }
+        let cur = self.search.list_state.selected().unwrap_or(0) as i32;
+        let next = (cur + delta).clamp(0, n as i32 - 1) as usize;
+        self.search.list_state.select(Some(next));
+        self.jump_to_hit(next);
+        self.status = format!("hit {}/{}", next + 1, n);
     }
 
     fn jump_to_hit(&mut self, idx: usize) {
