@@ -21,7 +21,7 @@ Cargo workspace with two crates:
 | `tui/src/tui.rs` | tui | Layout, input handling, detail rendering |
 | `tui/src/md.rs` | tui | Markdown → `ratatui::Line/Span` (TUI-only) |
 | `tui/src/update.rs` | tui | Background self-update check against GitHub releases |
-| `core/src/providers/` | core | Per-agent transcript discovery + parsing (claude / codex / hermes / qwen) |
+| `core/src/providers/` | core | Per-agent transcript discovery + parsing (claude / codex / hermes / omp / qwen) |
 | `core/src/session.rs` | core | Normalized `SessionMeta`, `SessionGroup`, transcript events |
 | `core/src/cache.rs` | core | On-disk timeline cache (`~/.claude-audit/_tui_cache/<agent>/<sid>.bin`) |
 | `core/src/dashboard.rs` | core | Time-windowed aggregations, per-range compute |
@@ -47,7 +47,7 @@ make deploy-xserver     # rsync src + rebuild on xserver
 - **Two-host validation**: any Rust change must build + smoke on both Mac and xserver before declaring done. Use `make deploy-xserver`.
 - **Keep the worktree small** — commit incremental units immediately (see the global `~/.claude/CLAUDE.md` Git Hygiene rule).
 - Prefer fixing parser heuristics with **concrete transcript fixtures**, not assumptions.
-- Pricing / context-window tables in `src/cost.rs` must be updated manually when a new model appears upstream.
+- Pricing / context-window tables in `src/cost.rs` must be updated manually when a new model appears upstream. Exception: oh-my-pi (pi-agent) ships a precomputed per-message cost; the omp provider stores it in `Usage::cost_override` and the dashboard uses it verbatim (no pricing-table lookup for omp / deepseek / ollama).
 
 ## Data sources
 
@@ -55,6 +55,7 @@ make deploy-xserver     # rsync src + rebuild on xserver
 |---|---|---|---|
 | Claude Code | `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` | `~/.claude/CLAUDE.md`, project `CLAUDE.md`, `.../memory/*.md` | `~/.claude/skills/<name>/SKILL.md` |
 | Codex | `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl` | `~/.codex/AGENTS.md`, `~/.codex/rules/default.rules` | `~/.codex/skills/<name>/` |
+| oh-my-pi | `~/.omp/agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl` | `~/.omp/agent/memories/<encoded-cwd>/*.md` (+ `rollout_summaries/`) | `~/.omp/agent/memories/<encoded-cwd>/skills/<name>/` |
 | Qwen | `~/.qwen/tmp/<encoded-cwd>/logs/chats/<session>.json` | `~/.qwen/settings.json`, `~/.qwen/output-language.md` | `~/.qwen/skills/<name>/` |
 
 ## Session classification
