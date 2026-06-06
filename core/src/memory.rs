@@ -115,6 +115,67 @@ fn collect_project_files(
     files
 }
 
+// oh-my-pi stores memory per project under ~/.omp/agent/memories/<encoded>/:
+// MEMORY.md + raw_memories.md + memory_summary.md at the top level, plus
+// per-session digests under rollout_summaries/. (skills/ is handled by the
+// skills view, not here.)
+fn collect_omp_memory_files(dir: &Path) -> Vec<MemoryFile> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        let mut mds: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
+        mds.sort();
+        for p in mds {
+            let cat = p
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "md".to_string());
+            if let Some(f) = stat_entry(&p, &cat) {
+                files.push(f);
+            }
+        }
+    }
+    let summaries = dir.join("rollout_summaries");
+    if summaries.is_dir() {
+        if let Ok(entries) = fs::read_dir(&summaries) {
+            let mut mds: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+                .collect();
+            mds.sort();
+            for p in mds {
+                if let Some(f) = stat_entry(&p, "rollout-summary") {
+                    files.push(f);
+                }
+            }
+        }
+    }
+    files
+}
+
+// The omp memory dir name is a lossy path encoding, so recover the real cwd by
+// matching a rollout_summary's leading session uuid against the session index.
+fn resolve_omp_cwd(dir: &Path, cwd_by_uuid: &std::collections::HashMap<String, String>) -> Option<String> {
+    let summaries = dir.join("rollout_summaries");
+    let entries = fs::read_dir(&summaries).ok()?;
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        // filename: "<8>-<4>-<4>-<4>-<12>-<slug>.md"; the uuid is the first 5 groups.
+        let groups: Vec<&str> = name.split('-').collect();
+        if groups.len() >= 5 {
+            let uuid = groups[..5].join("-");
+            if let Some(cwd) = cwd_by_uuid.get(&uuid) {
+                return Some(cwd.clone());
+            }
+        }
+    }
+    None
+}
+
 pub fn build() -> MemoryIndex {
     let Some(home) = dirs::home_dir() else {
         return MemoryIndex {
@@ -211,6 +272,45 @@ pub fn build() -> MemoryIndex {
             latest_mtime,
             agent: "qwen".to_string(),
         });
+    }
+
+    let omp_mem_root = home.join(".omp").join("agent").join("memories");
+    if omp_mem_root.is_dir() {
+        let cwd_by_uuid: std::collections::HashMap<String, String> =
+            crate::providers::omp::list_sessions()
+                .into_iter()
+                .filter_map(|m| Some((m.id.strip_prefix("omp:")?.to_string(), m.cwd?)))
+                .collect();
+        if let Ok(entries) = fs::read_dir(&omp_mem_root) {
+            for e in entries.flatten() {
+                let dir = e.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                let files = collect_omp_memory_files(&dir);
+                if files.is_empty() {
+                    continue;
+                }
+                let encoded = dir
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let cwd = resolve_omp_cwd(&dir, &cwd_by_uuid).unwrap_or_else(|| encoded.clone());
+                let name = Path::new(&cwd)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| cwd.clone());
+                let latest_mtime = files.iter().map(|f| f.mtime).max().unwrap_or(0);
+                projects.push(MemoryProject {
+                    name,
+                    cwd,
+                    encoded,
+                    files,
+                    latest_mtime,
+                    agent: "omp".to_string(),
+                });
+            }
+        }
     }
 
     projects.sort_by(|a, b| {

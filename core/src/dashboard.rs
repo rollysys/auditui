@@ -169,6 +169,11 @@ pub fn compute(sessions: &[SessionMeta], store: &CacheStore, range: Range) -> St
             let mut turns = 0usize;
             let mut calls = 0u64;
             let mut last_model = String::new();
+            // Sum of per-event cost. Used as the session total only when the
+            // provider supplied its own per-event cost (see cost_acc usage below);
+            // otherwise the aggregate compute_cost path is kept for parity.
+            let mut cost_acc = 0f64;
+            let mut has_override = false;
             let mut buckets = vec![0f64; n_buckets];
             let mut call_buckets = vec![0u64; n_buckets];
             for ev in &timeline.events {
@@ -194,7 +199,14 @@ pub fn compute(sessions: &[SessionMeta], store: &CacheStore, range: Range) -> St
                 } else {
                     ev.model.as_str()
                 };
-                let ev_cost = compute_cost(model_ev, &ev.usage);
+                let ev_cost = match ev.usage.cost_override {
+                    Some(c) => {
+                        has_override = true;
+                        c
+                    }
+                    None => compute_cost(model_ev, &ev.usage),
+                };
+                cost_acc += ev_cost;
                 if n_buckets > 0 && ev.ts >= ts_start {
                     let idx = ((ev.ts - ts_start) / bucket_secs) as usize;
                     if idx < n_buckets {
@@ -210,7 +222,13 @@ pub fn compute(sessions: &[SessionMeta], store: &CacheStore, range: Range) -> St
             } else {
                 last_model
             };
-            let cost = compute_cost(&model, &usage);
+            // Providers that ship their own per-event cost (omp/pi-agent) sum it
+            // directly; everyone else keeps the aggregate-usage pricing path.
+            let cost = if has_override {
+                cost_acc
+            } else {
+                compute_cost(&model, &usage)
+            };
             PerSession {
                 meta: s,
                 model,
@@ -349,6 +367,7 @@ fn agent_key(a: Agent) -> &'static str {
         Agent::Claude => "claude",
         Agent::Codex => "codex",
         Agent::Hermes => "hermes",
+        Agent::Omp => "omp",
         Agent::Qwen => "qwen",
     }
 }

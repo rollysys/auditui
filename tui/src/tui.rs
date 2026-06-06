@@ -62,6 +62,7 @@ impl FilterState {
             Some(Agent::Claude) => "claude",
             Some(Agent::Codex) => "codex",
             Some(Agent::Hermes) => "hermes",
+            Some(Agent::Omp) => "omp",
             Some(Agent::Qwen) => "qwen",
         }
     }
@@ -70,7 +71,8 @@ impl FilterState {
             None => Some(Agent::Claude),
             Some(Agent::Claude) => Some(Agent::Codex),
             Some(Agent::Codex) => Some(Agent::Hermes),
-            Some(Agent::Hermes) => Some(Agent::Qwen),
+            Some(Agent::Hermes) => Some(Agent::Omp),
+            Some(Agent::Omp) => Some(Agent::Qwen),
             Some(Agent::Qwen) => None,
         };
     }
@@ -1821,12 +1823,14 @@ impl App {
                     Agent::Claude => Color::Cyan,
                     Agent::Codex => Color::Green,
                     Agent::Hermes => Color::Magenta,
+                    Agent::Omp => Color::Yellow,
                     Agent::Qwen => Color::Blue,
                 };
                 let agent_tag = match h.agent {
                     Agent::Claude => "cla",
                     Agent::Codex => "cdx",
                     Agent::Hermes => "her",
+                    Agent::Omp => "omp",
                     Agent::Qwen => "qwn",
                 };
                 let header = Line::from(vec![
@@ -2562,6 +2566,7 @@ fn agent_color(a: Agent) -> Color {
         Agent::Claude => Color::Cyan,
         Agent::Codex => Color::Green,
         Agent::Hermes => Color::Magenta,
+        Agent::Omp => Color::Yellow,
         Agent::Qwen => Color::Blue,
     }
 }

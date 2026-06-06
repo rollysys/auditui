@@ -12,7 +12,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-const CACHE_VERSION: u32 = 1;
+// v2: Usage gained `cost_override` (provider-supplied per-event cost, used by
+// providers like omp that report their own pricing). Bumping invalidates v1
+// disk caches so they get rebuilt with the new field.
+const CACHE_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TokenEvent {
@@ -38,6 +41,7 @@ fn agent_name(a: Agent) -> &'static str {
         Agent::Claude => "claude",
         Agent::Codex => "codex",
         Agent::Hermes => "hermes",
+        Agent::Omp => "omp",
         Agent::Qwen => "qwen",
     }
 }

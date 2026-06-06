@@ -109,6 +109,19 @@ pub fn list() -> Vec<Skill> {
     scan_root(&home.join(".claude").join("skills"), "claude", &mut out);
     scan_root(&home.join(".codex").join("skills"), "codex", &mut out);
     scan_root(&home.join(".qwen").join("skills"), "qwen", &mut out);
+    // oh-my-pi keeps skills per project under memories/<encoded>/skills/.
+    let omp_mem = home.join(".omp").join("agent").join("memories");
+    if let Ok(entries) = fs::read_dir(&omp_mem) {
+        let mut dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        dirs.sort();
+        for d in dirs {
+            scan_root(&d.join("skills"), "omp", &mut out);
+        }
+    }
     out
 }
 
