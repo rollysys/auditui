@@ -66,10 +66,12 @@
 ### 一行命令安装(推荐)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rollysys/auditui/main/install.sh | bash
+curl -fsSL https://github.com/rollysys/auditui/releases/latest/download/install.sh | bash
 ```
 
 自动检测平台 → 从 GitHub 下载最新 release tarball → SHA-256 校验 → 装到 `~/.local/bin/auditui`。环境变量可覆盖:`PREFIX=/usr/local/bin`(改安装位置)、`TAG=v0.1.0`(锁版本)。
+
+> 安装脚本只访问 `github.com`(以及 release asset URL 会 302 跳转的 `objects.githubusercontent.com` CDN)。**不**访问 `raw.githubusercontent.com` 和 `api.github.com` — 这两个域在很多公司网络里被封。
 
 ### 预编译二进制(手动下载)
 

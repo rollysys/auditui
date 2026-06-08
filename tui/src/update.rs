@@ -1,9 +1,10 @@
 //! Background check for a newer GitHub release of auditui.
 //!
 //! Philosophy: cheap, opt-out-able, never blocks UI. On startup the main
-//! thread spawns a single worker; worker hits GitHub's `releases/latest`
-//! API at most once per 24h (cached to `~/.auditui.json`) and publishes
-//! a small state machine to a shared `Arc<Mutex<_>>`.
+//! thread spawns a single worker; worker resolves the latest tag from
+//! `github.com/<repo>/releases/latest` (a 302 to `/releases/tag/<TAG>`) at
+//! most once per 24h (cached to `~/.auditui.json`) and publishes a small
+//! state machine to a shared `Arc<Mutex<_>>`.
 //! The TUI topbar polls this on each draw and renders a subtle yellow
 //! "↑ current->latest" nudge when an update is available.
 //!
@@ -14,7 +15,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const API_URL: &str = "https://api.github.com/repos/rollysys/auditui/releases/latest";
+// We resolve the latest tag via the public `releases/latest` redirect on
+// github.com instead of hitting api.github.com — that subdomain is blocked
+// on many corporate networks (so is raw.githubusercontent.com).
+// `github.com/<repo>/releases/latest` 302-redirects to
+// `github.com/<repo>/releases/tag/<TAG>`; we follow it with a HEAD and
+// take the basename of the final URL.
+const LATEST_URL: &str = "https://github.com/rollysys/auditui/releases/latest";
 const CACHE_TTL_SECS: u64 = 86_400; // 24h
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -60,17 +67,22 @@ fn now_secs() -> u64 {
 }
 
 fn fetch_latest_tag() -> Option<String> {
-    let resp = ureq::get(API_URL)
+    // HEAD is enough: we only care about the URL the redirect chain lands
+    // on. ureq follows 3xx by default on GET and HEAD.
+    let resp = ureq::head(LATEST_URL)
         .set("User-Agent", &user_agent())
-        .set("Accept", "application/vnd.github+json")
         .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?;
-    let v: serde_json::Value = resp.into_json().ok()?;
-    v.get("tag_name")
-        .and_then(|t| t.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
+    // After redirects, `get_url()` is e.g.
+    // "https://github.com/rollysys/auditui/releases/tag/v0.1.2".
+    let final_url = resp.get_url().to_string();
+    let tag = final_url.rsplit('/').next()?.to_string();
+    if tag.starts_with('v') && tag.len() > 1 {
+        Some(tag)
+    } else {
+        None
+    }
 }
 
 /// Parse "v1.2.3" / "1.2.3" / "1.2" into (major, minor, patch). Returns
