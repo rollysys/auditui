@@ -82,7 +82,7 @@ Detects your platform, downloads the latest release tarball from GitHub, verifie
 Download from the [GitHub Releases](https://github.com/rollysys/auditui/releases) page. Available targets:
 
 - `aarch64-apple-darwin` — macOS Apple Silicon (M1/M2/M3/M4)
-- `x86_64-unknown-linux-gnu` — Linux x86_64
+- `x86_64-unknown-linux-musl` — Linux x86_64 (static; runs on any glibc, incl. old distros)
 
 > **Intel Mac (x86_64-apple-darwin)**: build from source with the steps below — Intel runners on GitHub Actions are deprecated and prebuilt artifacts are no longer published.
 

@@ -20,7 +20,10 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
           - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
+            # musl → a fully static Linux binary with no glibc version
+            # dependency, so it runs on old distros (e.g. Ubuntu 20.04 /
+            # glibc 2.31) that the glibc build's GLIBC_2.3x symbols break on.
+            target: x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +31,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # musl-gcc is needed to compile the C sources we statically link:
+      # rusqlite's bundled SQLite amalgamation and ring (ureq's rustls TLS).
+      - name: Install musl build tools
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry + build
         uses: actions/cache@v4

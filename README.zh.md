@@ -78,7 +78,7 @@ curl -fsSL https://github.com/rollysys/auditui/releases/latest/download/install.
 去 [GitHub Releases](https://github.com/rollysys/auditui/releases) 页面下载。提供的目标平台:
 
 - `aarch64-apple-darwin` — macOS Apple Silicon (M1/M2/M3/M4)
-- `x86_64-unknown-linux-gnu` — Linux x86_64
+- `x86_64-unknown-linux-musl` — Linux x86_64(静态链接;任意 glibc 版本均可运行,含老发行版)
 
 > **Intel Mac (x86_64-apple-darwin)**: 请用下面的源码编译方式 — GitHub Actions 的 Intel runner 已 deprecated,不再发布预编译产物。
 
