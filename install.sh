@@ -38,7 +38,9 @@ case "$os-$arch" in
     Darwin-arm64|Darwin-aarch64)
         target="aarch64-apple-darwin" ;;
     Linux-x86_64|Linux-amd64)
-        target="x86_64-unknown-linux-gnu" ;;
+        # Statically-linked musl build: runs on any x86_64 Linux regardless
+        # of glibc version (no GLIBC_2.3x dependency).
+        target="x86_64-unknown-linux-musl" ;;
     Darwin-x86_64)
         red "Intel Mac (Darwin x86_64) — prebuilt binary not published."
         red "Please build from source:"
