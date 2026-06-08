@@ -126,6 +126,8 @@ pub fn list_sessions() -> Vec<SessionMeta> {
             last_active_ts,
             started_at_ts,
             is_scripted: false,
+            parent_id: None,
+            child_count: 0,
         });
     }
     out

@@ -120,6 +120,12 @@ fn summarize(path: &Path) -> Option<SessionMeta> {
     // Prefer the explicit session-line id; fall back to the uuid in the filename.
     let raw_id = id.unwrap_or_else(|| uuid_from_stem(&stem));
 
+    // Sub-agent transcripts (oh-my-pi `task`/`job` children) live in a sibling
+    // directory named after this file's stem. Count them cheaply now (dir
+    // listing only); the actual child SessionMetas are parsed lazily via
+    // `list_children` when the user expands the parent.
+    let child_count = count_child_jsonl(&child_dir_of(path));
+
     Some(SessionMeta {
         agent: Agent::Omp,
         id: format!("omp:{raw_id}"),
@@ -137,7 +143,85 @@ fn summarize(path: &Path) -> Option<SessionMeta> {
         // pi-agent transcripts carry no entrypoint/headless marker, so we cannot
         // distinguish scripted from interactive runs.
         is_scripted: false,
+        parent_id: None,
+        child_count,
     })
+}
+
+// The sibling directory holding a session's sub-agent transcripts: the parent
+// file path with its `.jsonl` extension stripped.
+fn child_dir_of(parent_path: &Path) -> PathBuf {
+    parent_path.with_extension("")
+}
+
+// Count sub-agent transcripts without reading any file contents.
+fn count_child_jsonl(dir: &Path) -> usize {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter(|e| {
+            e.path().extension().and_then(|s| s.to_str()) == Some("jsonl")
+        })
+        .count()
+}
+
+/// Lazily load the sub-agent transcripts spawned by `parent`. Each oh-my-pi
+/// `task`/`job` child is a self-contained omp transcript in the sibling
+/// directory `<parent-stem>/`. Parsed on demand (a parent can spawn hundreds),
+/// so this is only called when the user expands the parent in the TUI.
+pub fn list_children(parent: &SessionMeta) -> Vec<SessionMeta> {
+    let dir = child_dir_of(&parent.path);
+    if !dir.is_dir() {
+        return vec![];
+    }
+    let Ok(files) = fs::read_dir(&dir) else {
+        return vec![];
+    };
+    let parent_stem = parent
+        .path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let mut out: Vec<SessionMeta> = files
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("jsonl"))
+        .filter_map(|p| summarize_child(&p, parent, &parent_stem))
+        .collect();
+    out.sort_by(|a, b| b.last_active_ts.cmp(&a.last_active_ts));
+    out
+}
+
+// Summarize one sub-agent transcript, reusing the top-level summarizer and
+// then stamping the parent linkage, a unique cache-safe id, and a readable
+// label derived from the filename slug.
+fn summarize_child(path: &Path, parent: &SessionMeta, parent_stem: &str) -> Option<SessionMeta> {
+    let mut meta = summarize(path)?;
+    let stem = path.file_stem()?.to_string_lossy().to_string();
+    // `:` / `/` get sanitized to `_` by the cache layer, so this stays unique
+    // and filesystem-safe even across parents that reuse a child slug.
+    meta.id = format!("omp:sub:{parent_stem}:{stem}");
+    meta.parent_id = Some(parent.id.clone());
+    meta.child_count = 0; // sub-agents don't nest further in practice
+    if meta.cwd.is_none() {
+        meta.cwd = parent.cwd.clone();
+    }
+    // The filename slug (e.g. "ScanTrigFunctions", "fg088") identifies the
+    // sub-agent far better than its first message, which is usually a large
+    // injected context block shared across siblings.
+    let slug = stem
+        .split_once('-')
+        .map(|(_, s)| s)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&stem)
+        .to_string();
+    meta.prompt = Some(match meta.prompt.take() {
+        Some(p) if !p.trim().is_empty() => format!("{slug} — {p}"),
+        _ => slug,
+    });
+    Some(meta)
 }
 
 // Filename is "<iso-ts>_<uuid>.jsonl"; the uuid is the segment after the first '_'.
@@ -391,6 +475,43 @@ mod tests {
         assert_eq!(meta.turns, 1);
         assert!(!meta.is_scripted);
         assert!(meta.started_at_ts > 0);
+        assert!(meta.parent_id.is_none());
+        assert_eq!(meta.child_count, 0);
+    }
+
+    #[test]
+    fn child_sub_agents_are_discovered_and_linked() {
+        let root = std::env::temp_dir().join(format!("omp_child_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        // Parent transcript + a sibling dir holding one sub-agent transcript
+        // and some non-jsonl noise (bash logs etc.) that must be ignored.
+        let parent_path = root.join("2026-05-25T08-41-00-000Z_aaaa.jsonl");
+        fs::write(&parent_path, FIXTURE).unwrap();
+        let child_dir = root.join("2026-05-25T08-41-00-000Z_aaaa");
+        fs::create_dir_all(&child_dir).unwrap();
+        fs::write(child_dir.join("0-ScanTrig.jsonl"), FIXTURE).unwrap();
+        fs::write(child_dir.join("10065.bash.log"), b"noise").unwrap();
+
+        let parent = summarize(&parent_path).unwrap();
+        assert_eq!(parent.child_count, 1, "only the .jsonl child is counted");
+        assert!(parent.parent_id.is_none());
+
+        let kids = list_children(&parent);
+        assert_eq!(kids.len(), 1);
+        let kid = &kids[0];
+        assert_eq!(kid.parent_id.as_deref(), Some(parent.id.as_str()));
+        assert_eq!(
+            kid.id,
+            "omp:sub:2026-05-25T08-41-00-000Z_aaaa:0-ScanTrig"
+        );
+        assert_eq!(kid.child_count, 0);
+        // Filename slug drives the label; the parent's cwd is inherited.
+        assert!(kid.prompt.as_deref().unwrap().starts_with("ScanTrig"));
+        assert_eq!(kid.cwd.as_deref(), Some("/tmp/demo"));
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

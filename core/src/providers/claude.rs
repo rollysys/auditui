@@ -122,6 +122,8 @@ fn summarize(path: &Path) -> Option<SessionMeta> {
         last_active_ts: modified,
         started_at_ts: if started_at_ts > 0 { started_at_ts } else { modified },
         is_scripted,
+        parent_id: None,
+        child_count: 0,
     })
 }
 
