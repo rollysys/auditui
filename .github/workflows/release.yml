@@ -50,6 +50,14 @@ jobs:
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/$bin" "$staging/"
           cp README.md LICENSE "$staging/"
+          # Bundle the session-audit skill so install.sh can copy it from
+          # the extracted tarball — avoids a second network round-trip
+          # against raw.githubusercontent.com, which is blocked on many
+          # corporate networks.
+          if [ -f skills/session-audit/SKILL.md ]; then
+            mkdir -p "$staging/skills/session-audit"
+            cp skills/session-audit/SKILL.md "$staging/skills/session-audit/SKILL.md"
+          fi
           tar czf "$staging.tar.gz" "$staging"
           shasum -a 256 "$staging.tar.gz" > "$staging.tar.gz.sha256"
 
@@ -67,11 +75,19 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
+      # Need source checkout so install.sh can be uploaded as a release
+      # asset (the bootstrap one-liner pulls it from
+      # github.com/<repo>/releases/latest/download/install.sh).
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Stage install.sh
+        run: cp install.sh artifacts/install.sh
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -79,5 +95,6 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.sha256
+            artifacts/install.sh
           draft: false
           generate_release_notes: true

@@ -4,7 +4,11 @@
 # PATH-reachable directory.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/rollysys/auditui/main/install.sh | bash
+#   curl -fsSL https://github.com/rollysys/auditui/releases/latest/download/install.sh | bash
+#
+# Only hits github.com (and the objects.githubusercontent.com CDN that
+# release-download URLs 302-redirect to). No raw.githubusercontent.com,
+# no api.github.com — those are commonly blocked on corporate networks.
 #
 # Environment overrides:
 #   PREFIX               install directory (default: $HOME/.local/bin)
@@ -53,11 +57,18 @@ esac
 blue "[auditui] platform: $target"
 
 if [ -z "$TAG" ]; then
-    TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-            | grep '"tag_name"' \
-            | head -1 \
-            | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
-    [ -n "$TAG" ] || { red "could not resolve latest tag from GitHub API"; exit 1; }
+    # Resolve latest tag without touching api.github.com:
+    # `github.com/<repo>/releases/latest` 302-redirects to
+    # `github.com/<repo>/releases/tag/<TAG>`. Follow with -L, discard the
+    # body, print the final URL with `-w '%{url_effective}'`, and take the
+    # basename.
+    latest_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+                    "https://github.com/$REPO/releases/latest")
+    TAG="${latest_url##*/}"
+    case "$TAG" in
+        v*) ;;
+        *)  red "could not resolve latest tag (got URL: $latest_url)"; exit 1 ;;
+    esac
 fi
 blue "[auditui] tag:      $TAG"
 
@@ -109,15 +120,19 @@ echo ""
 
 # ---- optional: session-audit skill ----
 # Teaches any agent (Claude Code / Codex / Qwen / SDK) how to read local
-# agent session logs. Single SKILL.md file, no executable scripts.
+# agent session logs. Shipped inside the release tarball as
+# `skills/session-audit/SKILL.md`; we just copy it out — no second network
+# fetch, no raw.githubusercontent.com.
 skill_dir="$HOME/.claude/skills/session-audit"
-skill_url="https://raw.githubusercontent.com/$REPO/main/skills/session-audit/SKILL.md"
+skill_src="$tmp/${stem}/skills/session-audit/SKILL.md"
 install_skill=0
 
 if [ -d "$skill_dir" ]; then
     :  # already installed, don't prompt
 elif [ -n "${AUDITUI_SKIP_SKILL:-}" ]; then
     :  # user opted out entirely
+elif [ ! -f "$skill_src" ]; then
+    :  # this release predates the bundled skill — skip silently
 elif [ "${AUDITUI_INSTALL_SKILL:-0}" = "1" ]; then
     install_skill=1
 elif [ -e /dev/tty ]; then
@@ -125,7 +140,7 @@ elif [ -e /dev/tty ]; then
     blue "Optional: install the 'session-audit' skill?"
     blue "  Teaches any Claude Code / Codex / Qwen / SDK agent how to read local"
     blue "  agent session logs (directory layout, JSONL schema, common recipes)."
-    blue "  Single file, ~7 KB, installs to $skill_dir/SKILL.md"
+    blue "  Single file, ~9 KB, installs to $skill_dir/SKILL.md"
     printf "  [y/N] "
     read -r ans </dev/tty || ans=""
     case "$ans" in
@@ -136,14 +151,12 @@ fi
 if [ "$install_skill" = "1" ]; then
     blue "[auditui] installing session-audit skill → $skill_dir/SKILL.md"
     mkdir -p "$skill_dir"
-    if curl -fsSL -o "$skill_dir/SKILL.md" "$skill_url"; then
-        green "[auditui] session-audit skill installed"
-    else
-        red "[auditui] failed to download $skill_url"
-    fi
-elif [ ! -d "$skill_dir" ] && [ -z "${AUDITUI_SKIP_SKILL:-}" ]; then
+    install -m 0644 "$skill_src" "$skill_dir/SKILL.md"
+    green "[auditui] session-audit skill installed"
+elif [ ! -d "$skill_dir" ] && [ -z "${AUDITUI_SKIP_SKILL:-}" ] && [ -f "$skill_src" ]; then
     echo ""
-    blue "skipped session-audit skill. install later with:"
-    echo "    mkdir -p $skill_dir && curl -fsSL -o $skill_dir/SKILL.md \\"
-    echo "        $skill_url"
+    blue "skipped session-audit skill. install later by re-running install.sh"
+    blue "with AUDITUI_INSTALL_SKILL=1, or copy from a fresh tarball:"
+    echo "    mkdir -p $skill_dir && cp <extracted>/skills/session-audit/SKILL.md \\"
+    echo "        $skill_dir/SKILL.md"
 fi

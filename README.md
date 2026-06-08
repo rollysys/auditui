@@ -70,10 +70,12 @@ thousands of them, across dozens of repos, and no good way to:
 ### One-liner (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rollysys/auditui/main/install.sh | bash
+curl -fsSL https://github.com/rollysys/auditui/releases/latest/download/install.sh | bash
 ```
 
 Detects your platform, downloads the latest release tarball from GitHub, verifies its SHA-256, and installs the `auditui` binary to `~/.local/bin`. Env overrides: `PREFIX=/usr/local/bin`, `TAG=v0.1.0` to pin a version.
+
+> The installer only contacts `github.com` (and the `objects.githubusercontent.com` CDN that release-asset URLs 302-redirect to). It does not hit `raw.githubusercontent.com` or `api.github.com`, which are commonly blocked on corporate networks.
 
 ### Prebuilt binaries (manual)
 
