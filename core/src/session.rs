@@ -18,6 +18,16 @@ pub struct SessionMeta {
     pub last_active_ts: u64,
     pub started_at_ts: u64,
     pub is_scripted: bool,
+    /// `Some(parent_session_id)` if this session is a sub-agent spawned by
+    /// another session (currently only oh-my-pi `task`/`job` children).
+    /// `None` for top-level sessions. Sub-agents are hidden from the top-level
+    /// group list and shown folded under their parent.
+    pub parent_id: Option<String>,
+    /// Number of sub-agent transcripts spawned by this session, counted
+    /// cheaply at discovery (directory listing only). The actual child
+    /// `SessionMeta`s are loaded lazily when the user expands the parent.
+    /// `0` for every provider except oh-my-pi parents that spawned `task`s.
+    pub child_count: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -152,6 +162,16 @@ fn agent_tag(a: Agent) -> &'static str {
         Agent::Hermes => "hermes",
         Agent::Omp => "omp",
         Agent::Qwen => "qwen",
+    }
+}
+
+/// Lazily load the sub-agent sessions spawned by `meta`, if any. Only oh-my-pi
+/// currently nests sub-agents; every other provider returns an empty vec.
+/// Called on demand when the user expands a parent in the TUI.
+pub fn list_children(meta: &SessionMeta) -> Vec<SessionMeta> {
+    match meta.agent {
+        Agent::Omp => providers::omp::list_children(meta),
+        _ => Vec::new(),
     }
 }
 

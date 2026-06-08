@@ -342,6 +342,13 @@ struct App {
     skills_scroll: u16,
     groups_cache: Option<Vec<SessionGroup>>,
     expanded_groups: HashSet<String>,
+    /// Parent sessions whose sub-agent transcripts are currently folded open
+    /// in the list, keyed by parent session id (oh-my-pi `task`/`job` children).
+    expanded_parents: HashSet<String>,
+    /// Lazily-loaded sub-agent `SessionMeta`s, keyed by parent session id.
+    /// Populated the first time a parent is expanded — a parent can spawn
+    /// hundreds of children, so these are never loaded at startup.
+    children: HashMap<String, Vec<SessionMeta>>,
     refresh_secs: Arc<AtomicU64>,
     update_state: crate::update::UpdateState,
     /// Full rendered line count from the last draw_detail pass. Written by
@@ -371,20 +378,30 @@ enum ListRow {
     GroupHeader { group_idx: usize },
     Child { group_idx: usize, sid: String },
     Solo { group_idx: usize, sid: String },
+    /// A sub-agent transcript folded under its parent session. `sid` is the
+    /// sub-agent's id; `parent_sid` keys into `App::children`.
+    SubAgent {
+        group_idx: usize,
+        parent_sid: String,
+        sid: String,
+    },
 }
 
 impl ListRow {
     fn sid(&self) -> Option<&str> {
         match self {
             ListRow::GroupHeader { .. } => None,
-            ListRow::Child { sid, .. } | ListRow::Solo { sid, .. } => Some(sid.as_str()),
+            ListRow::Child { sid, .. }
+            | ListRow::Solo { sid, .. }
+            | ListRow::SubAgent { sid, .. } => Some(sid.as_str()),
         }
     }
     fn group_idx(&self) -> usize {
         match self {
             ListRow::GroupHeader { group_idx }
             | ListRow::Child { group_idx, .. }
-            | ListRow::Solo { group_idx, .. } => *group_idx,
+            | ListRow::Solo { group_idx, .. }
+            | ListRow::SubAgent { group_idx, .. } => *group_idx,
         }
     }
 }
@@ -468,6 +485,8 @@ impl App {
             skills_scroll: 0,
             groups_cache: None,
             expanded_groups: HashSet::new(),
+            expanded_parents: HashSet::new(),
+            children: HashMap::new(),
             refresh_secs,
             update_state,
             detail_row_count: 0,
@@ -495,6 +514,15 @@ impl App {
     fn apply_refreshed_sessions(&mut self, new_sessions: Vec<SessionMeta>) {
         let prev_sid = self.selected_sid();
         self.sessions = new_sessions;
+        // Keep sub-agent folds open across a refresh so an auto-refresh tick
+        // never collapses what you're reading. Only drop cache/fold entries
+        // for parents that vanished. We deliberately do NOT re-list children
+        // of still-expanded parents here: a parent with hundreds of children
+        // would re-scan its directory on every 30s tick. New children show up
+        // on the next manual collapse+expand.
+        let present: HashSet<String> = self.sessions.iter().map(|m| m.id.clone()).collect();
+        self.expanded_parents.retain(|p| present.contains(p));
+        self.children.retain(|p, _| present.contains(p));
         self.invalidate_groups();
         self.last_refresh = Instant::now();
         self.stats_for = None;
@@ -637,7 +665,7 @@ impl App {
     }
 
     fn load_preview(&mut self, sid: &str) {
-        let Some(meta) = self.sessions.iter().find(|m| m.id == sid).cloned() else {
+        let Some(meta) = self.meta_by_sid(sid) else {
             return;
         };
         match session::read_transcript(&meta) {
@@ -1390,12 +1418,19 @@ impl App {
 
     fn list_rows(&mut self) -> Vec<ListRow> {
         let expanded = self.expanded_groups.clone();
-        let groups = self.groups();
+        let expanded_parents = self.expanded_parents.clone();
+        // Clone groups to release the borrow on `self` so we can read
+        // `self.children` while emitting sub-agent rows.
+        let groups = self.groups().to_vec();
         let mut rows = Vec::with_capacity(groups.len());
         for (gi, g) in groups.iter().enumerate() {
             if g.len() == 1 {
-                let sid = g.members[0].id.clone();
-                rows.push(ListRow::Solo { group_idx: gi, sid });
+                let m = &g.members[0];
+                rows.push(ListRow::Solo {
+                    group_idx: gi,
+                    sid: m.id.clone(),
+                });
+                self.push_subagent_rows(&mut rows, gi, m, &expanded_parents);
             } else {
                 rows.push(ListRow::GroupHeader { group_idx: gi });
                 if expanded.contains(&g.key) {
@@ -1404,11 +1439,65 @@ impl App {
                             group_idx: gi,
                             sid: m.id.clone(),
                         });
+                        self.push_subagent_rows(&mut rows, gi, m, &expanded_parents);
                     }
                 }
             }
         }
         rows
+    }
+
+    // Append a SubAgent row per loaded child when `parent` is an expanded
+    // sub-agent host. No-op for parents with no children or not expanded.
+    fn push_subagent_rows(
+        &self,
+        rows: &mut Vec<ListRow>,
+        group_idx: usize,
+        parent: &SessionMeta,
+        expanded_parents: &HashSet<String>,
+    ) {
+        if parent.child_count == 0 || !expanded_parents.contains(&parent.id) {
+            return;
+        }
+        if let Some(kids) = self.children.get(&parent.id) {
+            for k in kids {
+                rows.push(ListRow::SubAgent {
+                    group_idx,
+                    parent_sid: parent.id.clone(),
+                    sid: k.id.clone(),
+                });
+            }
+        }
+    }
+
+    // Resolve a session id to its meta, searching top-level sessions first and
+    // then lazily-loaded sub-agents.
+    fn meta_by_sid(&self, sid: &str) -> Option<SessionMeta> {
+        if let Some(m) = self.sessions.iter().find(|m| m.id == sid) {
+            return Some(m.clone());
+        }
+        self.children
+            .values()
+            .flatten()
+            .find(|m| m.id == sid)
+            .cloned()
+    }
+
+    // Toggle the sub-agent fold for the parent session `sid`, lazily loading
+    // its children the first time it's expanded.
+    fn toggle_subagents(&mut self, sid: &str) {
+        let parent = match self.sessions.iter().find(|m| m.id == sid) {
+            Some(m) if m.child_count > 0 => m.clone(),
+            _ => return,
+        };
+        if self.expanded_parents.remove(sid) {
+            return; // was expanded → collapse
+        }
+        if !self.children.contains_key(sid) {
+            let kids = session::list_children(&parent);
+            self.children.insert(sid.to_string(), kids);
+        }
+        self.expanded_parents.insert(sid.to_string());
     }
 
     fn selected_sid(&mut self) -> Option<String> {
@@ -1446,16 +1535,23 @@ impl App {
         let Some(idx) = self.list_state.selected() else { return; };
         let rows = self.list_rows();
         let Some(row) = rows.get(idx).cloned() else { return; };
-        if let ListRow::GroupHeader { group_idx } = row {
-            let key = {
-                let groups = self.groups();
-                groups.get(group_idx).map(|g| g.key.clone())
-            };
-            if let Some(key) = key {
-                if !self.expanded_groups.remove(&key) {
-                    self.expanded_groups.insert(key);
+        match row {
+            ListRow::GroupHeader { group_idx } => {
+                let key = {
+                    let groups = self.groups();
+                    groups.get(group_idx).map(|g| g.key.clone())
+                };
+                if let Some(key) = key {
+                    if !self.expanded_groups.remove(&key) {
+                        self.expanded_groups.insert(key);
+                    }
                 }
             }
+            // A session row that itself spawned sub-agents: fold those open/closed.
+            ListRow::Solo { sid, .. } | ListRow::Child { sid, .. } => {
+                self.toggle_subagents(&sid);
+            }
+            ListRow::SubAgent { .. } => {}
         }
     }
 
@@ -1873,8 +1969,10 @@ impl App {
     fn draw_list(&mut self, f: &mut ratatui::Frame, area: Rect) {
         let rows = self.list_rows();
         let expanded = self.expanded_groups.clone();
+        let expanded_parents = self.expanded_parents.clone();
         let groups: Vec<SessionGroup> = self.groups().to_vec();
         let total_filtered = self.filtered_sessions().len();
+        let children = &self.children;
         let items: Vec<ListItem> = rows
             .iter()
             .map(|row| match row {
@@ -1923,12 +2021,24 @@ impl App {
                 }
                 ListRow::Solo { group_idx, .. } => {
                     let s = &groups[*group_idx].members[0];
-                    list_item_for_session(s, false)
+                    list_item_for_session(s, Indent::Top, expanded_parents.contains(&s.id))
                 }
                 ListRow::Child { group_idx, sid } => {
                     let g = &groups[*group_idx];
                     let s = g.members.iter().find(|m| &m.id == sid).unwrap_or(&g.members[0]);
-                    list_item_for_session(s, true)
+                    list_item_for_session(s, Indent::Child, expanded_parents.contains(&s.id))
+                }
+                ListRow::SubAgent { parent_sid, sid, .. } => {
+                    match children
+                        .get(parent_sid)
+                        .and_then(|v| v.iter().find(|m| &m.id == sid))
+                    {
+                        Some(s) => list_item_for_session(s, Indent::SubAgent, false),
+                        None => ListItem::new(Line::from(Span::styled(
+                            "      ⤷ …",
+                            Style::default().fg(Color::DarkGray),
+                        ))),
+                    }
                 }
             })
             .collect();
@@ -1962,7 +2072,7 @@ impl App {
         let title = match sel_sid.as_deref() {
             None => " Transcript ".to_string(),
             Some(sid) => {
-                let meta_clone = self.sessions.iter().find(|m| m.id == sid).cloned();
+                let meta_clone = self.meta_by_sid(sid);
                 let group_pos = {
                     let g_idx = self.selected_group_idx();
                     if let Some(gi) = g_idx {
@@ -2575,7 +2685,18 @@ fn agent_short(a: Agent) -> &'static str {
     a.short()
 }
 
-fn list_item_for_session(s: &SessionMeta, indent: bool) -> ListItem<'static> {
+// Indentation tier for a session row in the list.
+#[derive(Clone, Copy, PartialEq)]
+enum Indent {
+    /// Top-level session (solo group, or the parent of a sub-agent fold).
+    Top,
+    /// Member of a multi-session time-group.
+    Child,
+    /// Sub-agent transcript folded under its parent.
+    SubAgent,
+}
+
+fn list_item_for_session(s: &SessionMeta, indent: Indent, sub_expanded: bool) -> ListItem<'static> {
     let agent_col = agent_color(s.agent);
     let ts = format_ts(s.last_active_ts);
     let prompt = s
@@ -2585,11 +2706,12 @@ fn list_item_for_session(s: &SessionMeta, indent: bool) -> ListItem<'static> {
         .replace('\n', " ");
     let prompt_short: String = prompt.chars().take(50).collect();
     let mut spans: Vec<Span> = Vec::new();
-    if indent {
-        spans.push(Span::styled(
-            "  └ ",
-            Style::default().fg(Color::DarkGray),
-        ));
+    match indent {
+        Indent::Top => {}
+        Indent::Child => spans.push(Span::styled("  └ ", Style::default().fg(Color::DarkGray))),
+        Indent::SubAgent => {
+            spans.push(Span::styled("      ⤷ ", Style::default().fg(Color::DarkGray)))
+        }
     }
     spans.push(Span::styled(
         format!("{:3} ", s.agent.short()),
@@ -2603,7 +2725,7 @@ fn list_item_for_session(s: &SessionMeta, indent: bool) -> ListItem<'static> {
     }
     spans.push(Span::styled(ts, Style::default().fg(Color::DarkGray)));
     spans.push(Span::raw(" "));
-    if !indent {
+    if indent == Indent::Top {
         if let Some(cwd) = s.cwd.as_deref() {
             spans.push(Span::styled(
                 shorten_cwd(cwd),
@@ -2611,6 +2733,16 @@ fn list_item_for_session(s: &SessionMeta, indent: bool) -> ListItem<'static> {
             ));
             spans.push(Span::raw(" "));
         }
+    }
+    // Sessions that spawned sub-agents get a fold marker (▶/▼ + child count).
+    if s.child_count > 0 && indent != Indent::SubAgent {
+        let chevron = if sub_expanded { "▼" } else { "▶" };
+        spans.push(Span::styled(
+            format!("{chevron}{}⤷ ", s.child_count),
+            Style::default()
+                .fg(Color::Rgb(180, 140, 90))
+                .add_modifier(Modifier::BOLD),
+        ));
     }
     spans.push(Span::raw(prompt_short));
     ListItem::new(Line::from(spans))
