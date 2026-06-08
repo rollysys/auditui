@@ -3,7 +3,7 @@
 [English](README.md) · [中文](README.zh.md)
 
 
-**Terminal UI for browsing Claude Code / Codex / Qwen coding-agent session logs.**
+**Terminal UI for browsing Claude Code / Codex / oh-my-pi / Qwen coding-agent session logs.**
 
 Read-only. No hooks. No daemon. No network. Parses the transcript files your agent
 already writes, indexes them in parallel, caches aggregations on disk, and gives you
@@ -24,7 +24,7 @@ a single-binary TUI to look at what actually happened.
 ## Why
 
 Coding agents produce a lot of transcripts — `~/.claude/projects/<cwd>/<session>.jsonl`,
-`~/.codex/sessions/...`, `~/.qwen/tmp/<cwd>/logs/chats/...`. After a few weeks you have
+`~/.codex/sessions/...`, `~/.omp/agent/sessions/...`, `~/.qwen/tmp/<cwd>/logs/chats/...`. After a few weeks you have
 thousands of them, across dozens of repos, and no good way to:
 
 - Find *that one session* where you figured out the tricky thing
@@ -122,7 +122,7 @@ On startup the TUI spawns a background worker that hits GitHub's `releases/lates
 | View | Key | Action |
 |------|-----|--------|
 | global | `S` / `D` / `M` / `K` | Sessions / Dashboard / Memory / Skills |
-| global | `f` | cycle agent filter (all / claude / codex / qwen) |
+| global | `f` | cycle agent filter (all / claude / codex / hermes / omp / qwen) |
 | global | `p` | toggle scripted-session filter (SDK/headless) |
 | global | `r` | re-index sessions + invalidate caches |
 | global | `q` / Ctrl-C | quit |
@@ -146,7 +146,11 @@ On startup the TUI spawns a background worker that hits GitHub's `releases/lates
 |-------|-------------|--------|--------|
 | Claude Code | `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` | `~/.claude/CLAUDE.md`, project `CLAUDE.md`, `.../memory/*.md` | `~/.claude/skills/<name>/SKILL.md` |
 | Codex | `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl` | `~/.codex/AGENTS.md`, `~/.codex/rules/default.rules` | `~/.codex/skills/<name>/` |
+| oh-my-pi | `~/.omp/agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl` | `~/.omp/agent/memories/<encoded-cwd>/*.md` (+ `rollout_summaries/`) | `~/.omp/agent/memories/<encoded-cwd>/skills/<name>/` |
 | Qwen | `~/.qwen/tmp/<encoded-cwd>/logs/chats/<session>.json` | `~/.qwen/settings.json`, `~/.qwen/output-language.md` | `~/.qwen/skills/<name>/` |
+
+> oh-my-pi (pi-agent) records its own per-message cost inline, so `auditui` uses
+> that figure verbatim rather than pricing it from the table below.
 
 ## Cache
 

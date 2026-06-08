@@ -11,6 +11,12 @@ pub struct Usage {
     pub cache_creation_1h_tokens: u64,
     pub cache_creation_tokens: u64, // legacy single-bucket; attributed to 5m when 5m/1h are zero
     pub web_search_calls: u64,
+    /// Provider-supplied cost in USD for this event. When present, the dashboard
+    /// uses it verbatim instead of recomputing from the PRICING table (e.g. omp /
+    /// pi-agent records its own per-message cost). `None` for providers we price
+    /// ourselves. Aggregating sums the present values.
+    #[serde(default)]
+    pub cost_override: Option<f64>,
 }
 
 impl Usage {
@@ -22,6 +28,10 @@ impl Usage {
         self.cache_creation_1h_tokens += other.cache_creation_1h_tokens;
         self.cache_creation_tokens += other.cache_creation_tokens;
         self.web_search_calls += other.web_search_calls;
+        if other.cost_override.is_some() {
+            self.cost_override =
+                Some(self.cost_override.unwrap_or(0.0) + other.cost_override.unwrap_or(0.0));
+        }
     }
 
     pub fn cache_creation_total(&self) -> u64 {

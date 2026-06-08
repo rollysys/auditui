@@ -7,7 +7,7 @@ mod update;
 use anyhow::Result;
 
 const HELP_TEXT: &str = "\
-auditui — local TUI viewer for Claude Code / Codex / Qwen session transcripts
+auditui — local TUI viewer for Claude Code / Codex / oh-my-pi / Qwen session transcripts
 
 USAGE:
     auditui [OPTIONS]
