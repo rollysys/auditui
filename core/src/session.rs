@@ -165,6 +165,16 @@ fn agent_tag(a: Agent) -> &'static str {
     }
 }
 
+/// Lazily load the sub-agent sessions spawned by `meta`, if any. Only oh-my-pi
+/// currently nests sub-agents; every other provider returns an empty vec.
+/// Called on demand when the user expands a parent in the TUI.
+pub fn list_children(meta: &SessionMeta) -> Vec<SessionMeta> {
+    match meta.agent {
+        Agent::Omp => providers::omp::list_children(meta),
+        _ => Vec::new(),
+    }
+}
+
 pub fn read_transcript(meta: &SessionMeta) -> Result<Vec<TranscriptEvent>> {
     match meta.agent {
         Agent::Claude => providers::claude::read_transcript(&meta.path),

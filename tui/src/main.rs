@@ -56,6 +56,26 @@ fn main() -> Result<()> {
             let prompt: String = prompt.chars().take(60).collect();
             println!("  {} {} turns={} {}", s.agent.short(), s.id, s.turns, prompt);
         }
+        // oh-my-pi sub-agent diagnostics: how many parents spawned children,
+        // and a live list_children() probe of the first such parent.
+        let hosts: Vec<&session::SessionMeta> =
+            list.iter().filter(|s| s.child_count > 0).collect();
+        let total_children: usize = hosts.iter().map(|s| s.child_count).sum();
+        println!(
+            "omp sub-agent hosts: {} (total children={})",
+            hosts.len(),
+            total_children
+        );
+        if let Some(p) = hosts.first().copied() {
+            let kids = session::list_children(p);
+            println!(
+                "  probe {} → child_count={} loaded={} first={}",
+                p.id,
+                p.child_count,
+                kids.len(),
+                kids.first().map(|k| k.id.as_str()).unwrap_or("-")
+            );
+        }
         return Ok(());
     }
     if args.iter().any(|a| a == "--bench") {
