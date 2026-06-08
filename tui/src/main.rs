@@ -68,13 +68,26 @@ fn main() -> Result<()> {
         );
         if let Some(p) = hosts.first().copied() {
             let kids = session::list_children(p);
+            let uniq_ids: std::collections::HashSet<&str> =
+                kids.iter().map(|k| k.id.as_str()).collect();
+            let uniq_paths: std::collections::HashSet<_> =
+                kids.iter().map(|k| k.path.as_path()).collect();
             println!(
-                "  probe {} → child_count={} loaded={} first={}",
+                "  probe {} → child_count={} loaded={} uniq_ids={} uniq_paths={}",
                 p.id,
                 p.child_count,
                 kids.len(),
-                kids.first().map(|k| k.id.as_str()).unwrap_or("-")
+                uniq_ids.len(),
+                uniq_paths.len()
             );
+            for k in kids.iter().take(6) {
+                println!(
+                    "    child id={} file={} prompt={:?}",
+                    k.id,
+                    k.path.file_name().and_then(|s| s.to_str()).unwrap_or("-"),
+                    k.prompt.as_deref().unwrap_or("").chars().take(40).collect::<String>()
+                );
+            }
         }
         return Ok(());
     }

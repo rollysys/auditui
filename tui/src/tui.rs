@@ -514,11 +514,15 @@ impl App {
     fn apply_refreshed_sessions(&mut self, new_sessions: Vec<SessionMeta>) {
         let prev_sid = self.selected_sid();
         self.sessions = new_sessions;
-        // Drop the lazily-loaded sub-agent cache and fold state: child_count
-        // and parentage may have shifted, so re-expand on demand against fresh
-        // metadata rather than risk a stale fold.
-        self.children.clear();
-        self.expanded_parents.clear();
+        // Keep sub-agent folds open across a refresh so an auto-refresh tick
+        // never collapses what you're reading. Only drop cache/fold entries
+        // for parents that vanished. We deliberately do NOT re-list children
+        // of still-expanded parents here: a parent with hundreds of children
+        // would re-scan its directory on every 30s tick. New children show up
+        // on the next manual collapse+expand.
+        let present: HashSet<String> = self.sessions.iter().map(|m| m.id.clone()).collect();
+        self.expanded_parents.retain(|p| present.contains(p));
+        self.children.retain(|p, _| present.contains(p));
         self.invalidate_groups();
         self.last_refresh = Instant::now();
         self.stats_for = None;
