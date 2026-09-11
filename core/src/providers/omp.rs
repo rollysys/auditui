@@ -565,9 +565,139 @@ mod tests {
         assert!(events[6].body.contains("<system-reminder>"));
         assert!(events[7].body.contains("[compaction]") && events[7].body.contains("## Goal"));
     }
+
+    #[test]
+    fn extract_tools_from_fixture() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/omp_tools.jsonl");
+        assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+
+        let tl = extract_tools(&fixture);
+
+        // Fixture: 2 user turns, 3 tool calls (2 in first assistant + 1 error),
+        // 3 tool results, 1 compaction, 1 developer message (not a turn).
+        assert_eq!(tl.turns, 2, "user turns");
+        assert_eq!(tl.compactions, 1, "compactions");
+        assert_eq!(tl.events.len(), 3, "tool events");
+
+        // First two calls from the same assistant message (both ts_ms = 1782225727332).
+        let e0 = &tl.events[0];
+        assert_eq!(e0.name, "read");
+        assert_eq!(e0.turn, 0);
+        assert!(!e0.is_error);
+        // result_ms: 1782225740969 - 1782225727332 = 13637 ms
+        assert_eq!(e0.duration_ms, 13637);
+
+        let e1 = &tl.events[1];
+        assert_eq!(e1.name, "bash");
+        assert_eq!(e1.turn, 0);
+        assert!(!e1.is_error);
+        // result_ms: 1782225741124 - 1782225727332 = 13792 ms
+        assert_eq!(e1.duration_ms, 13792);
+
+        // Third call is in turn 1 (after second user message), with isError=true.
+        let e2 = &tl.events[2];
+        assert_eq!(e2.name, "browser");
+        assert_eq!(e2.turn, 1);
+        assert!(e2.is_error, "error call should be flagged");
+        // result_ms: 1782228222051 - 1782228211870 = 10181 ms
+        assert_eq!(e2.duration_ms, 10181);
+
+        // result_bytes should be non-zero for all
+        for ev in &tl.events {
+            assert!(ev.result_bytes > 0, "result_bytes should be populated for {}", ev.name);
+        }
+    }
+
+    #[test]
+    fn extract_tools_missing_file() {
+        let tl = extract_tools(Path::new("/nonexistent/omp_session.jsonl"));
+        assert_eq!(tl.events.len(), 0);
+        assert_eq!(tl.turns, 0);
+    }
 }
 
-/// Tool-call timeline (see `crate::tools`). Stub: replaced by the real extractor.
-pub fn extract_tools(_path: &Path) -> crate::tools::ToolTimeline {
-    crate::tools::ToolTimeline::default()
+/// Extract tool-call timeline from an oh-my-pi session transcript.
+///
+/// Walks the JSONL once; feeds `ToolCollector` with call/result pairs keyed by
+/// tool-call id. Timestamps come from `message.timestamp` (milliseconds since
+/// epoch); durations are computed via `result_ms`.
+pub fn extract_tools(path: &Path) -> crate::tools::ToolTimeline {
+    use crate::tools::{looks_like_error, ToolCollector};
+    use std::collections::HashMap;
+
+    let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let Ok(file) = File::open(path) else {
+        return crate::tools::ToolTimeline::default();
+    };
+    let reader = BufReader::new(file);
+    let mut col = ToolCollector::new();
+    // Map toolCall id → message.timestamp (ms) for duration calculation.
+    let mut call_ts: HashMap<String, u64> = HashMap::new();
+
+    for (idx, line) in reader.lines().map_while(Result::ok).enumerate() {
+        let line_no = (idx + 1) as u32;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+            "compaction" => col.compaction(),
+            "message" => {
+                let Some(m) = v.get("message") else { continue };
+                let ts_ms = m.get("timestamp").and_then(|x| x.as_u64()).unwrap_or(0);
+                let ts_secs = ts_ms / 1000;
+
+                match m.get("role").and_then(|x| x.as_str()).unwrap_or("") {
+                    "user" => {
+                        // Only count as user turn if content has a text part.
+                        let has_text = m
+                            .get("content")
+                            .and_then(|c| c.as_array())
+                            .map(|arr| arr.iter().any(|p| {
+                                p.get("type").and_then(|t| t.as_str()) == Some("text")
+                            }))
+                            .unwrap_or(false);
+                        if has_text {
+                            col.user_turn();
+                        }
+                    }
+                    "assistant" => {
+                        let Some(content) = m.get("content").and_then(|c| c.as_array()) else {
+                            continue;
+                        };
+                        for part in content {
+                            if part.get("type").and_then(|t| t.as_str()) != Some("toolCall") {
+                                continue;
+                            }
+                            let id = part.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                            let name = part.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                            // omp arguments is already a JSON object (not a string).
+                            let args = part.get("arguments").cloned()
+                                .unwrap_or(serde_json::Value::Object(Default::default()));
+                            col.call(id, name, &args, ts_secs, line_no);
+                            if !id.is_empty() {
+                                call_ts.insert(id.to_string(), ts_ms);
+                            }
+                        }
+                    }
+                    "toolResult" => {
+                        let tool_call_id = m.get("toolCallId")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let body = join_text_parts(m.get("content"));
+                        let explicit_err = m.get("isError")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(false);
+                        let is_error = explicit_err || looks_like_error(&body);
+                        let call_ms = call_ts.remove(tool_call_id).unwrap_or(0);
+                        col.result_ms(tool_call_id, &body, is_error, ts_ms, call_ms, line_no);
+                    }
+                    // "developer" and other roles: skip.
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    col.finish(file_size)
 }
