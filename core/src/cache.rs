@@ -4,6 +4,7 @@
 
 use crate::cost::Usage;
 use crate::providers::Agent;
+use crate::tools::{ToolTimeline, TOOLS_CACHE_VERSION};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -67,6 +68,37 @@ pub fn load_from_disk(path: &Path, file_size: u64) -> Option<SessionTimeline> {
 }
 
 pub fn save_to_disk(path: &Path, timeline: &SessionTimeline) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context("create cache dir")?;
+    }
+    let data = bincode::serialize(timeline).context("bincode serialize")?;
+    let tmp = path.with_extension("tmp");
+    {
+        let mut f = fs::File::create(&tmp).context("create tmp")?;
+        f.write_all(&data).context("write tmp")?;
+        f.sync_all().ok();
+    }
+    fs::rename(&tmp, path).context("rename tmp")?;
+    Ok(())
+}
+
+// Tool-call timeline cache: separate file (`<sid>.tools.bin`) so the dashboard's
+// hot path never pays for it; loaded only by the audit detectors.
+pub fn tools_disk_path(agent: Agent, sid: &str) -> Option<PathBuf> {
+    let base = cache_root()?;
+    Some(base.join(agent_name(agent)).join(format!("{}.tools.bin", sid_safe(sid))))
+}
+
+pub fn load_tools_from_disk(path: &Path, file_size: u64) -> Option<ToolTimeline> {
+    let data = fs::read(path).ok()?;
+    let t: ToolTimeline = bincode::deserialize(&data).ok()?;
+    if t.version != TOOLS_CACHE_VERSION || t.file_size != file_size {
+        return None;
+    }
+    Some(t)
+}
+
+pub fn save_tools_to_disk(path: &Path, timeline: &ToolTimeline) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context("create cache dir")?;
     }

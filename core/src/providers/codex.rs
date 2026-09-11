@@ -326,3 +326,8 @@ pub fn read_transcript(path: &Path) -> Result<Vec<TranscriptEvent>> {
     }
     Ok(out)
 }
+
+/// Tool-call timeline (see `crate::tools`). Stub: replaced by the real extractor.
+pub fn extract_tools(_path: &Path) -> crate::tools::ToolTimeline {
+    crate::tools::ToolTimeline::default()
+}

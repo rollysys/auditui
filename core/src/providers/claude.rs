@@ -475,3 +475,8 @@ fn merge_claude_usage(dst: &mut Usage, u: &serde_json::Value) {
             .unwrap_or(0);
     }
 }
+
+/// Tool-call timeline (see `crate::tools`). Stub: replaced by the real extractor.
+pub fn extract_tools(_path: &Path) -> crate::tools::ToolTimeline {
+    crate::tools::ToolTimeline::default()
+}

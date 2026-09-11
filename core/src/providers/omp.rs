@@ -566,3 +566,8 @@ mod tests {
         assert!(events[7].body.contains("[compaction]") && events[7].body.contains("## Goal"));
     }
 }
+
+/// Tool-call timeline (see `crate::tools`). Stub: replaced by the real extractor.
+pub fn extract_tools(_path: &Path) -> crate::tools::ToolTimeline {
+    crate::tools::ToolTimeline::default()
+}

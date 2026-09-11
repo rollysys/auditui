@@ -1,4 +1,5 @@
 use crate::cache::{self, CacheStore, SessionTimeline, TokenEvent};
+use crate::tools::ToolTimeline;
 use crate::cost::Usage;
 use crate::providers::{self, Agent};
 use anyhow::Result;
@@ -197,6 +198,36 @@ fn extract_events(meta: &SessionMeta) -> Vec<TokenEvent> {
         Agent::Omp => providers::omp::extract_events(&meta.path),
         Agent::Qwen => providers::qwen::extract_events(&meta.path),
     }
+}
+
+/// Extract the tool-call timeline for a session. Only claude / codex / omp
+/// carry tool calls in a form worth auditing; other providers yield an
+/// empty timeline (turns/compactions 0).
+fn extract_tools(meta: &SessionMeta) -> ToolTimeline {
+    match meta.agent {
+        Agent::Claude => providers::claude::extract_tools(&meta.path),
+        Agent::Codex => providers::codex::extract_tools(&meta.path),
+        Agent::Omp => providers::omp::extract_tools(&meta.path),
+        Agent::Hermes | Agent::Qwen => ToolTimeline::default(),
+    }
+}
+
+/// Tool timeline from the on-disk cache, re-parsed and persisted on miss.
+/// No in-memory tier: audits stream sessions once.
+pub fn get_tools(meta: &SessionMeta) -> ToolTimeline {
+    let size = file_size(&meta.path);
+    let disk = cache::tools_disk_path(meta.agent, &meta.id);
+    if let Some(p) = &disk {
+        if let Some(t) = cache::load_tools_from_disk(p, size) {
+            return t;
+        }
+    }
+    let mut t = extract_tools(meta);
+    t.file_size = size;
+    if let Some(p) = &disk {
+        let _ = cache::save_tools_to_disk(p, &t);
+    }
+    t
 }
 
 // Return timeline from cache, falling back to disk, falling back to re-parse+persist.
