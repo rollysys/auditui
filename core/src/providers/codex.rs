@@ -327,7 +327,272 @@ pub fn read_transcript(path: &Path) -> Result<Vec<TranscriptEvent>> {
     Ok(out)
 }
 
-/// Tool-call timeline (see `crate::tools`). Stub: replaced by the real extractor.
-pub fn extract_tools(_path: &Path) -> crate::tools::ToolTimeline {
-    crate::tools::ToolTimeline::default()
+/// Extract tool-call timeline from a Codex rollout JSONL.
+///
+/// Turn signal: `event_msg / user_message` (one per genuine user input).
+/// We prefer this over `response_item / message role=user` because the latter
+/// includes environment-context injections, `<turn_aborted>` notifications,
+/// and compacted-replay items — none of which are real user turns.
+///
+/// Compaction signal: `compacted` (top-level type) or equivalently
+/// `event_msg / context_compacted` — both fire 1:1; we use `compacted`
+/// since it appears first in the stream.
+pub fn extract_tools(path: &Path) -> crate::tools::ToolTimeline {
+    use crate::tools::{self, ToolCollector};
+
+    let Ok(file) = File::open(path) else {
+        return crate::tools::ToolTimeline::default();
+    };
+    let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let reader = BufReader::new(file);
+    let mut col = ToolCollector::new();
+
+    for (idx, line) in reader.lines().map_while(Result::ok).enumerate() {
+        let line_no = (idx + 1) as u32; // 1-based
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let ts = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .and_then(parse_ts_secs)
+            .unwrap_or(0);
+        let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+
+        match ty {
+            // --- turn signal ---
+            "event_msg" => {
+                let Some(p) = v.get("payload") else { continue };
+                let pt = p.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                if pt == "user_message" {
+                    col.user_turn();
+                }
+            }
+            // --- compaction signal ---
+            "compacted" => {
+                col.compaction();
+            }
+            // --- tool calls & results ---
+            "response_item" => {
+                let Some(p) = v.get("payload") else { continue };
+                let pt = p.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                match pt {
+                    "function_call" => {
+                        let call_id = p
+                            .get("call_id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let name = p
+                            .get("name")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let args_raw = p
+                            .get("arguments")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("{}");
+                        let args: serde_json::Value =
+                            serde_json::from_str(args_raw).unwrap_or_else(|_| {
+                                serde_json::Value::String(args_raw.to_string())
+                            });
+                        // Normalize array-valued "command" to a joined string so
+                        // tools.rs shell_shape/SHELL_TOOLS can match exec_command(cmd).
+                        let args = normalize_command_array(name, args);
+                        col.call(call_id, name, &args, ts, line_no);
+                    }
+                    "function_call_output" => {
+                        let call_id = p
+                            .get("call_id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let output = p
+                            .get("output")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let is_error = is_exec_error(output)
+                            || tools::looks_like_error(output);
+                        col.result(call_id, output, is_error, ts, line_no);
+                    }
+                    "custom_tool_call" => {
+                        let call_id = p
+                            .get("call_id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let name = p
+                            .get("name")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("custom");
+                        let input_str = p
+                            .get("input")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let args = serde_json::json!({"input": input_str});
+                        col.call(call_id, name, &args, ts, line_no);
+                    }
+                    "custom_tool_call_output" => {
+                        let call_id = p
+                            .get("call_id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let output = p
+                            .get("output")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let is_error = tools::looks_like_error(output);
+                        col.result(call_id, output, is_error, ts, line_no);
+                    }
+                    "web_search_call" => {
+                        // No call_id; no paired result. Extract query from
+                        // payload.action.query (primary search term).
+                        let query = p
+                            .get("action")
+                            .and_then(|a| a.get("query"))
+                            .and_then(|q| q.as_str())
+                            .unwrap_or("");
+                        let args = serde_json::json!({"query": query});
+                        col.call("", "web_search", &args, ts, line_no);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    col.finish(file_size)
+}
+
+/// Detect non-zero exit code in Codex exec_command output.
+/// Pattern: "Process exited with code N" where N ≠ 0.
+fn is_exec_error(output: &str) -> bool {
+    // Fast path: skip scanning if the marker isn't present at all.
+    let Some(pos) = output.find("Process exited with code ") else {
+        return false;
+    };
+    let after = &output[pos + "Process exited with code ".len()..];
+    // The code is the next integer token (possibly negative).
+    let code_str: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    code_str != "0" && !code_str.is_empty()
+}
+
+/// If `args["command"]` is a JSON array (some Codex versions serialize the
+/// command as `["cmd", "arg1", ...]`), join it into a single string and wrap
+/// back into `{"command": "cmd arg1 ..."}` so that `tools.rs` SHELL_TOOLS
+/// shape normalization works. Also maps exec_command's `cmd` key.
+fn normalize_command_array(name: &str, mut args: serde_json::Value) -> serde_json::Value {
+    // exec_command uses "cmd"; shell/shell_command use "command".
+    let keys = match name {
+        "exec_command" => &["cmd", "command"][..],
+        _ => &["command"][..],
+    };
+    for key in keys {
+        if let Some(arr) = args.get(*key).and_then(|v| v.as_array()) {
+            let joined: String = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            args[*key] = serde_json::Value::String(joined);
+            return args;
+        }
+    }
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("codex_tools.jsonl")
+    }
+
+    #[test]
+    fn extract_tools_fixture() {
+        let tl = extract_tools(&fixture_path());
+
+        // Fixture has 13 lines:
+        //  1: event_msg/user_message  (turn 0)
+        //  2: function_call exec_command (success)
+        //  3: function_call_output     (code 0)
+        //  4: function_call exec_command (error)
+        //  5: function_call_output     (code 1)
+        //  6: custom_tool_call apply_patch
+        //  7: custom_tool_call_output
+        //  8: web_search_call          (no result)
+        //  9: compacted
+        // 10: event_msg/context_compacted
+        // 11: event_msg/user_message  (turn 1)
+        // 12: function_call write_stdin
+        // 13: function_call_output
+
+        // 2 user turns
+        assert_eq!(tl.turns, 2, "turns");
+
+        // 1 compaction
+        assert_eq!(tl.compactions, 1, "compactions");
+
+        // 5 tool calls: 2 exec_command + 1 apply_patch + 1 web_search + 1 write_stdin
+        assert_eq!(tl.events.len(), 5, "events count");
+
+        // Check names
+        let names: Vec<&str> = tl.events.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["exec_command", "exec_command", "apply_patch", "web_search", "write_stdin"]
+        );
+
+        // First exec_command: success (code 0)
+        assert!(!tl.events[0].is_error, "first exec_command should succeed");
+        assert!(tl.events[0].result_bytes > 0, "should have result bytes");
+
+        // Second exec_command: error (code 1)
+        assert!(tl.events[1].is_error, "second exec_command should be error");
+
+        // apply_patch: paired with output
+        assert!(tl.events[2].result_bytes > 0, "apply_patch should have result");
+
+        // web_search: no result (no call_id, empty id)
+        assert_eq!(tl.events[3].result_bytes, 0, "web_search has no result");
+
+        // write_stdin: paired with output, turn 1
+        assert_eq!(tl.events[4].turn, 1, "write_stdin should be in turn 1");
+        assert!(tl.events[4].result_bytes > 0, "write_stdin should have result");
+
+        // Exec command should produce a shell shape
+        assert!(!tl.events[0].shape.is_empty(), "exec_command should have a shape");
+    }
+
+    #[test]
+    fn is_exec_error_detects_nonzero() {
+        assert!(is_exec_error("Process exited with code 1\nstuff"));
+        assert!(is_exec_error("Process exited with code -1\n"));
+        assert!(is_exec_error("Chunk ID: abc\nProcess exited with code 127\n"));
+        assert!(!is_exec_error("Process exited with code 0\nok"));
+        assert!(!is_exec_error("no exit info here"));
+    }
+
+    #[test]
+    fn normalize_command_array_joins() {
+        let args = serde_json::json!({"command": ["ls", "-la", "/tmp"]});
+        let result = normalize_command_array("shell", args);
+        assert_eq!(result["command"].as_str().unwrap(), "ls -la /tmp");
+
+        // Non-array passes through
+        let args = serde_json::json!({"cmd": "pwd"});
+        let result = normalize_command_array("exec_command", args.clone());
+        assert_eq!(result, args);
+    }
+
+    #[test]
+    fn extract_tools_missing_file() {
+        let tl = extract_tools(Path::new("/nonexistent/file.jsonl"));
+        assert_eq!(tl.events.len(), 0);
+        assert_eq!(tl.turns, 0);
+    }
 }
