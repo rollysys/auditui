@@ -38,6 +38,44 @@ const DEDUP_WHITELIST: &[&str] = &[
     "list_todos", "get_todos",
 ];
 
+/// Shapes whose command word is a generic utility carry no extractable
+/// workflow (`cat PATH`, `sed -n STR PATH`); `RecurringShape` skips them.
+/// Inline scripts and help lookups have their own detectors.
+const GENERIC_COMMANDS: &[&str] = &[
+    "cat", "sed", "tail", "head", "grep", "ls", "wc", "echo", "mkdir", "rm", "mv", "cp",
+    "cd", "pwd", "touch", "sleep", "which", "find", "sort", "uniq", "cut", "tr", "diff",
+    "git", "python3", "python", "node", "open", "kill", "curl", "date",
+];
+
+/// Tools whose "calls" are the harness working as intended (skill loading,
+/// tool discovery), never a smell.
+const META_TOOLS: &[&str] = &["ToolSearch", "Skill", "todo", "TodoWrite", "TodoRead"];
+
+fn is_internal_uri(s: &str) -> bool {
+    s.starts_with("skill://") || s.starts_with("xd://") || s.starts_with("memory://")
+        || s.starts_with("agent://") || s.starts_with("history://") || s.starts_with("local://")
+        || s.starts_with("omp://") || s.starts_with("rule://")
+}
+
+fn is_generic_shape(e: &ToolEvent) -> bool {
+    if e.shape.is_empty() || META_TOOLS.contains(&e.name.as_str()) || is_internal_uri(&e.shape) {
+        return true;
+    }
+    if e.flags & (flag::HELP | flag::INLINE_SCRIPT) != 0 {
+        return true;
+    }
+    // Command word after leading `cd PATH &&` / env assignments.
+    let mut words = e.shape.split_whitespace().peekable();
+    while let Some(w) = words.peek() {
+        if w.contains('=') || *w == "cd" || *w == "PATH" || *w == "&&" || *w == ";" {
+            words.next();
+        } else {
+            break;
+        }
+    }
+    words.next().map_or(true, |w| GENERIC_COMMANDS.contains(&w))
+}
+
 // ── Output types ───────────────────────────────────────────────────────────
 
 #[derive(Serialize, Clone, Debug)]
@@ -232,7 +270,10 @@ fn detect_heavy_turn(meta: &SessionMeta, tl: &ToolTimeline, out: &mut Vec<Findin
         entry.0 += 1;
         entry.1.push(e);
     }
-    for (_, (count, evts)) in &turn_counts {
+    // One finding per session: its heaviest turn. Reporting every turn over
+    // the threshold buried the report (172 of 337 findings on a 30d run).
+    let heaviest = turn_counts.values().max_by_key(|(count, _)| *count);
+    if let Some((count, evts)) = heaviest {
         if *count >= HEAVY_TURN_CALLS {
             let mut evidence = Vec::new();
             for e in evts.iter().take(MAX_EVIDENCE) {
@@ -458,7 +499,7 @@ fn detect_recurring_shape(sessions: &[(SessionMeta, ToolTimeline)], out: &mut Ve
     for (meta, tl) in sessions {
         // Track which shape_fps we already recorded evidence for in this session
         let mut seen_in_session: HashSet<u64> = HashSet::new();
-        for e in &tl.events {
+        for e in tl.events.iter().filter(|e| !is_generic_shape(e)) {
             let info = map.entry(e.shape_fp).or_insert_with(|| ShapeInfo {
                 session_ids: HashSet::new(),
                 total: 0,
@@ -614,7 +655,7 @@ fn detect_read_hot_file(sessions: &[(SessionMeta, ToolTimeline)], out: &mut Vec<
         let mut seen: HashSet<String> = HashSet::new();
         for e in &tl.events {
             // Match read/Read tools by name
-            if e.name != "read" && e.name != "Read" && e.name != "read_file" {
+            if e.name != "read" && e.name != "Read" && e.name != "read_file" || is_internal_uri(&e.preview) {
                 continue;
             }
             let path = if e.preview.is_empty() {
