@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod cache;
 pub mod cost;
 pub mod dashboard;
