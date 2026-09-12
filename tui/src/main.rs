@@ -1,5 +1,6 @@
-pub use auditui_core::{audit, cache, cost, dashboard, memory, providers, session, skills};
+pub use auditui_core::{cache, cost, dashboard, memory, providers, session, skills};
 
+mod audit;
 mod md;
 mod tui;
 mod update;
@@ -11,6 +12,7 @@ auditui — local TUI viewer for Claude Code / Codex / oh-my-pi / Qwen session t
 
 USAGE:
     auditui [OPTIONS]
+    auditui audit <COMMAND> [OPTIONS]
 
 OPTIONS:
     -h, --help             Print help and exit
@@ -22,17 +24,20 @@ OPTIONS:
         --group-dump       Print session-grouping histogram and exit
         --memory-dump      Print memory + skills index and exit
         --md-dump <PATH>   Render a Markdown file through the parser and exit
-        --audit            Run harness debt audit and exit
-          --since <WINDOW> Time window: 7d, 30d, or all (default: 30d)
-          --cwd <PREFIX>   Only sessions whose cwd starts with PREFIX
-          --agent <LIST>   Comma-separated: claude,codex,omp (default: all three)
-          --json           Output JSON instead of Markdown
+    audit <COMMAND>        Cost ledger, evidence candidates, and intervention tracking
+                           Run `auditui audit --help` for commands and strict flags
 
 With no options, launches the interactive TUI.
 ";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "audit") {
+        return audit::run(&args[2..]);
+    }
+    if args.iter().any(|arg| arg == "--audit") {
+        anyhow::bail!("--audit was removed; use `auditui audit costs` or `auditui audit candidates`");
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{HELP_TEXT}");
         return Ok(());
@@ -95,9 +100,6 @@ fn main() -> Result<()> {
             }
         }
         return Ok(());
-    }
-    if args.iter().any(|a| a == "--audit") {
-        return run_audit(&args);
     }
     if args.iter().any(|a| a == "--bench") {
         return bench();
@@ -222,92 +224,3 @@ fn bench() -> Result<()> {
     Ok(())
 }
 
-fn run_audit(args: &[String]) -> Result<()> {
-    use providers::Agent;
-
-    // Parse --since (default 30d)
-    let since_str = args
-        .iter()
-        .position(|a| a == "--since")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.as_str())
-        .unwrap_or("30d");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let cutoff_ts = match since_str {
-        "7d" => now.saturating_sub(7 * 86_400),
-        "30d" => now.saturating_sub(30 * 86_400),
-        "all" => 0,
-        other => anyhow::bail!("unknown --since value: {} (expected 7d, 30d, or all)", other),
-    };
-
-    // Parse --cwd prefix filter
-    let cwd_prefix: Option<&str> = args
-        .iter()
-        .position(|a| a == "--cwd")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.as_str());
-
-    // Parse --agent filter (default: claude,codex,omp)
-    let agent_str = args
-        .iter()
-        .position(|a| a == "--agent")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.as_str())
-        .unwrap_or("claude,codex,omp");
-    let agents: Vec<Agent> = agent_str
-        .split(',')
-        .filter_map(|s| match s.trim().to_lowercase().as_str() {
-            "claude" => Some(Agent::Claude),
-            "codex" => Some(Agent::Codex),
-            "omp" => Some(Agent::Omp),
-            _ => {
-                eprintln!("warning: unknown agent '{}', skipping", s);
-                None
-            }
-        })
-        .collect();
-
-    let json_output = args.iter().any(|a| a == "--json");
-
-    // Index and filter sessions
-    let all = session::index_all();
-    let filtered: Vec<&session::SessionMeta> = all
-        .iter()
-        .filter(|s| agents.contains(&s.agent))
-        .filter(|s| s.last_active_ts >= cutoff_ts)
-        .filter(|s| {
-            cwd_prefix
-                .map(|pfx| s.cwd.as_deref().unwrap_or("").starts_with(pfx))
-                .unwrap_or(true)
-        })
-        .collect();
-
-    eprintln!(
-        "audit: {} sessions matched (of {} total), loading tool timelines...",
-        filtered.len(),
-        all.len()
-    );
-
-    // Load tool timelines (sequential — get_tools handles its own disk cache)
-    let pairs: Vec<(session::SessionMeta, auditui_core::tools::ToolTimeline)> = filtered
-        .into_iter()
-        .map(|meta| {
-            let tl = session::get_tools(meta);
-            (meta.clone(), tl)
-        })
-        .collect();
-
-    let mut report = audit::run(&pairs);
-    report.window = since_str.to_string();
-
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", audit::render_markdown(&report));
-    }
-
-    Ok(())
-}

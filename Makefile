@@ -31,7 +31,7 @@ md-dump: release
 	./$(BIN) --md-dump "$(FILE)"
 
 audit: release
-	./$(BIN) --audit
+	./$(BIN) audit costs $(ARGS)
 
 deploy-xserver: release
 	./deploy-xserver.sh

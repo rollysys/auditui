@@ -161,3 +161,91 @@ pub fn compute_cost(model: &str, u: &Usage) -> f64 {
         + u.web_search_calls as f64 * 0.01;
     (cost * 1_000_000.0).round() / 1_000_000.0
 }
+
+/// Snapshot of the existing pricing table, not a claim of current provider rates.
+pub const PRICING_VERSION: &str = "auditui-2026-04-17";
+
+/// Ledger-only estimate: unknown models remain unknown. Unlike the dashboard's
+/// historical heuristic, this accepts only an exact model or a calendar-dated
+/// release of that model, never a substring or a future model-family version.
+/// Provider-reported `cost_override` is deliberately not an estimated cost.
+pub fn estimate_cost_strict(model: &str, u: &Usage) -> Option<f64> {
+    let (_, p) = PRICING.iter().find(|(name, _)| {
+        // These are dashboard heuristics for local inference, not priced models.
+        if matches!(*name, "gemma" | "llama" | ".gguf") {
+            return false;
+        }
+        if model.eq_ignore_ascii_case(name) {
+            return true;
+        }
+        let Some(prefix) = model.get(..name.len()) else {
+            return false;
+        };
+        if !prefix.eq_ignore_ascii_case(name) {
+            return false;
+        }
+        let Some(suffix) = model.get(name.len()..).and_then(|s| s.strip_prefix('-')) else {
+            return false;
+        };
+        let format = match suffix.len() {
+            8 if suffix.bytes().all(|b| b.is_ascii_digit()) => "%Y%m%d",
+            10 if suffix.as_bytes()[4] == b'-' && suffix.as_bytes()[7] == b'-' => {
+                "%Y-%m-%d"
+            }
+            _ => return false,
+        };
+        chrono::NaiveDate::parse_from_str(suffix, format).is_ok()
+    })?;
+    let cw5m = if u.cache_creation_5m_tokens == 0 && u.cache_creation_1h_tokens == 0 {
+        u.cache_creation_tokens
+    } else {
+        u.cache_creation_5m_tokens
+    };
+    Some(
+        (u.input_tokens as f64 * p.inp
+            + u.output_tokens as f64 * p.out
+            + u.cache_read_tokens as f64 * p.cr
+            + cw5m as f64 * p.cw5m
+            + u.cache_creation_1h_tokens as f64 * p.cw1h)
+            / 1_000_000.0
+            + u.web_search_calls as f64 * 0.01,
+    )
+}
+
+#[cfg(test)]
+mod ledger_pricing_tests {
+    use super::*;
+
+    #[test]
+    fn strict_pricing_rejects_family_guesses_and_accepts_release_dates() {
+        let usage = Usage { input_tokens: 1_000_000, ..Usage::default() };
+        assert_eq!(estimate_cost_strict("claude-opus-4-6", &usage), Some(5.0));
+        assert_eq!(estimate_cost_strict("claude-opus-4-6-20260205", &usage), Some(5.0));
+        assert_eq!(estimate_cost_strict("gpt-4.1-mini-2025-04-14", &usage), Some(0.4));
+        for model in [
+            "claude-opus-4-7", "gpt-4.1-future", "gpt-4.1-mini-2025-02-30",
+            "prefix-gpt-4.1", "llama", "some-model.gguf", "",
+        ] {
+            assert_eq!(estimate_cost_strict(model, &usage), None, "{model}");
+        }
+    }
+
+    #[test]
+    fn strict_pricing_accounts_for_every_billable_category_once() {
+        let mut usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_read_tokens: 1_000_000,
+            cache_creation_5m_tokens: 1_000_000,
+            cache_creation_1h_tokens: 1_000_000,
+            cache_creation_tokens: 2_000_000,
+            web_search_calls: 1,
+            cost_override: Some(999.0),
+        };
+        assert!((estimate_cost_strict("claude-sonnet-4-6", &usage).unwrap() - 28.06).abs() < 1e-10);
+        usage.cache_creation_5m_tokens = 0;
+        usage.cache_creation_1h_tokens = 0;
+        assert!((estimate_cost_strict("claude-sonnet-4-6", &usage).unwrap() - 25.81).abs() < 1e-10);
+        assert_eq!(estimate_cost_strict("unknown", &usage), None);
+    }
+}
