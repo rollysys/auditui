@@ -428,6 +428,7 @@ impl Parser {
                 }
                 .to_owned(),
                 usage: Usage::default(),
+                cache_counters_complete: false,
                 reported_usd: None,
                 estimated_usd: None,
                 pricing_version: None,
@@ -689,6 +690,7 @@ impl Parser {
             model: self.model.clone(),
             basis: basis.to_owned(),
             usage,
+            cache_counters_complete: false,
             reported_usd: None,
             estimated_usd,
             pricing_version: estimated_usd.map(|_| PRICING_VERSION.to_owned()),
@@ -747,6 +749,11 @@ impl Parser {
         if let Some(&index) = self.tools.get(&id) {
             let existing = &mut self.ledger.tools[index];
             if existing.batch_id == batch && existing.result.is_none() {
+                if existing.args_fingerprint != args_fingerprint {
+                    existing.call = source.clone();
+                    existing.script =
+                        super::script_generation::metadata(name, args, self.cwd.as_deref());
+                }
                 existing.operation = operation;
                 existing.object = object;
                 existing.args_fingerprint = args_fingerprint;
@@ -774,6 +781,7 @@ impl Parser {
             operation,
             object,
             args_fingerprint,
+            script: super::script_generation::metadata(name, args, self.cwd.as_deref()),
             start_ms: ts,
             end_ms: None,
             status: "pending".to_owned(),
@@ -843,10 +851,11 @@ impl Parser {
                 );
                 continue;
             };
-            let (usage, complete) = assistant_usage(&raw, self.provider);
+            let (usage, complete, cache_complete) = assistant_usage(&raw, self.provider);
             let reported = usage.cost_override;
             let observation = &mut self.ledger.observations[index];
             observation.usage = usage;
+            observation.cache_counters_complete = observation.basis == "request" && cache_complete;
             observation.reported_usd = reported;
             if reported.is_none() && complete {
                 observation.estimated_usd = estimate_cost_strict(&observation.model, &usage);
@@ -881,6 +890,7 @@ impl Parser {
                 model: self.model.clone(),
                 basis: "unattributed".to_owned(),
                 usage: Usage::default(),
+                cache_counters_complete: false,
                 reported_usd: None,
                 estimated_usd: None,
                 pricing_version: None,
@@ -964,7 +974,7 @@ fn merge_snapshot(previous: &mut Value, current: &Value) -> bool {
     changed
 }
 
-fn assistant_usage(raw: &Value, provider: Agent) -> (Usage, bool) {
+fn assistant_usage(raw: &Value, provider: Agent) -> (Usage, bool, bool) {
     let mut usage = Usage::default();
     let (input, output, cache_read, cache_write) = if provider == Agent::Omp {
         ("input", "output", "cacheRead", "cacheWrite")
@@ -986,6 +996,10 @@ fn assistant_usage(raw: &Value, provider: Agent) -> (Usage, bool) {
         && [cache_read, cache_write]
             .iter()
             .all(|key| raw.get(*key).is_none() || read(key).is_some());
+    // Billing historically permits omitted cache categories. Cache analysis
+    // requires explicit categories so absence cannot become a zero-hit claim.
+    let mut cache_complete =
+        read(input).is_some() && read(cache_read).is_some() && read(cache_write).is_some();
     if provider == Agent::Omp {
         usage.cost_override = raw
             .pointer("/cost/total")
@@ -1026,6 +1040,7 @@ fn assistant_usage(raw: &Value, provider: Agent) -> (Usage, bool) {
                 usage.cache_creation_5m_tokens = five.unwrap_or(0);
                 usage.cache_creation_1h_tokens = hour.unwrap_or(0);
                 usage.cache_creation_tokens = 0;
+                cache_complete = read(input).is_some() && read(cache_read).is_some();
             } else {
                 complete = false;
                 // Keep an independently reported aggregate when the TTL split
@@ -1041,7 +1056,7 @@ fn assistant_usage(raw: &Value, provider: Agent) -> (Usage, bool) {
             complete &= search.as_u64().is_some();
         }
     }
-    (usage, complete)
+    (usage, complete, complete && cache_complete)
 }
 
 fn canonical_tool(name: &str) -> &str {
@@ -1057,7 +1072,7 @@ fn is_shell(name: &str) -> bool {
     )
 }
 
-fn resolve_path(path: &str, cwd: Option<&str>) -> Option<String> {
+pub(super) fn resolve_path(path: &str, cwd: Option<&str>) -> Option<String> {
     if path.is_empty() || path.starts_with('~') {
         return None;
     }
@@ -1407,6 +1422,10 @@ mod tests {
         let ledger = fixture("ledger_codex.jsonl", Agent::Codex);
         assert!(ledger.requests.is_empty());
         assert!(ledger.observations.iter().all(|o| o.request_id.is_none()));
+        assert!(ledger
+            .observations
+            .iter()
+            .all(|o| !o.cache_counters_complete));
         assert!(ledger.tools.iter().all(|t| t.request_id.is_none()));
         assert_eq!(ledger.observations.len(), 5);
         let known: Vec<_> = ledger
@@ -1691,8 +1710,134 @@ mod tests {
     }
 
     #[test]
+    fn streamed_script_evidence_tracks_changed_arguments_not_replayed_snapshots() {
+        let body: String = (0..20)
+            .map(|index| {
+                format!(
+                    "value_{index} = \"{}\"\n",
+                    "streamed-script-evidence-marker".repeat(3)
+                )
+            })
+            .collect();
+        let assistant = |entry: &str, response: &str, call: &str, code: &str| {
+            json!({
+                "type":"message", "id":entry,
+                "message":{
+                    "role":"assistant", "responseId":response, "model":"fixture",
+                    "usage":{"input":10,"output":10,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},
+                    "content":[{"type":"toolCall","id":call,"name":"write",
+                        "arguments":{"path":"script.py","content":code}}]
+                }
+            })
+        };
+        let records = [
+            json!({"type":"session","id":"streaming","cwd":"/workspace"}),
+            assistant("partial", "response-a", "write-a", "value_0 = 1\n"),
+            assistant("complete", "response-a", "write-a", &body),
+            assistant("replay", "response-a", "write-a", &body),
+            json!({"type":"message","id":"result","message":{
+                "role":"toolResult","toolCallId":"write-a","isError":false,
+                "content":[{"type":"text","text":"written"}]
+            }}),
+            assistant("repeat", "response-b", "write-b", &body),
+        ];
+        let text: String = records
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut record)| {
+                record["timestamp"] = json!(index as u64 + 1);
+                format!("{record}\n")
+            })
+            .collect();
+        let source = TempSource::new(text.as_bytes());
+        let ledger = parse_file(&source.0, Agent::Omp, None, None).unwrap();
+        assert_eq!(ledger.tools.len(), 2);
+        let first = &ledger.tools[0];
+        assert_eq!(
+            first.script.as_ref().unwrap().code_fingerprint,
+            fingerprint(body.as_bytes())
+        );
+        assert_eq!(first.call.line, 3);
+        assert_eq!(first.call.record_id.as_deref(), Some("complete"));
+        let candidates =
+            super::super::analysis::candidates(&ledger, &super::super::Query::default());
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.kind == "repeated_script_generation")
+            .expect("the final streamed body establishes repetition");
+        assert!(candidate.evidence.iter().any(|evidence| evidence.line == 3));
+        assert!(!candidate.evidence.iter().any(|evidence| evidence.line == 4));
+    }
+
+    #[test]
+    fn cache_presence_distinguishes_missing_zero_and_unattributed_usage() {
+        let mut parser = Parser::new(
+            SourceRef {
+                source_id: "cache-presence".into(),
+                version: "fixture".into(),
+                ..SourceRef::default()
+            },
+            Agent::Omp,
+            Some("/workspace"),
+            None,
+        );
+        let mut usage = json!({"input":20000,"output":10,"cacheWrite":0});
+        for (index, cache_read) in [None, Some(json!(0)), Some(Value::Null), Some(json!(0))]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(value) = cache_read {
+                usage["cacheRead"] = value;
+            }
+            let mut message = json!({
+                "role":"assistant", "model":"unknown", "usage":usage,
+                "content":[], "timestamp":index as u64 + 1
+            });
+            if index != 3 {
+                message["responseId"] = json!(format!("response-{index}"));
+            }
+            parser.record(
+                &json!({"type":"message","id":format!("entry-{index}"),"message":message}),
+                index as u64 + 1,
+            );
+        }
+        let ledger = parser.finish();
+        assert_eq!(
+            ledger
+                .observations
+                .iter()
+                .map(|o| o.cache_counters_complete)
+                .collect::<Vec<_>>(),
+            vec![false, true, false, false]
+        );
+        assert!(ledger
+            .observations
+            .iter()
+            .all(|o| o.usage.cache_read_tokens == 0));
+    }
+
+    #[test]
+    fn cache_presence_requires_a_complete_consistent_write_partition() {
+        let mut usage = json!({
+            "input_tokens":20000, "output_tokens":10, "cache_read_input_tokens":0,
+            "cache_creation":{"ephemeral_5m_input_tokens":4096,"ephemeral_1h_input_tokens":0}
+        });
+        let (normalized, _, cache_complete) = assistant_usage(&usage, Agent::Claude);
+        assert!(cache_complete);
+        assert_eq!(normalized.cache_creation_total(), 4096);
+        usage["cache_creation_input_tokens"] = json!(8192);
+        assert!(!assistant_usage(&usage, Agent::Claude).2);
+        usage
+            .as_object_mut()
+            .unwrap()
+            .remove("cache_creation_input_tokens");
+        usage["cache_creation"]["ephemeral_1h_input_tokens"] = Value::Null;
+        assert!(!assistant_usage(&usage, Agent::Claude).2);
+    }
+
+    #[test]
     fn incomplete_cache_categories_prevent_a_plausible_but_incomplete_estimate() {
-        let (usage, complete) = assistant_usage(
+        let (usage, complete, _) = assistant_usage(
             &json!({
                 "input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":10,
                 "cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":2}
@@ -1704,7 +1849,7 @@ mod tests {
         assert_eq!(usage.cache_creation_total(), 10);
         assert_eq!(usage.cache_creation_5m_tokens, 0);
         assert_eq!(usage.cache_creation_1h_tokens, 0);
-        let (partial, complete) = assistant_usage(
+        let (partial, complete, _) = assistant_usage(
             &json!({
                 "input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":10,
                 "cache_creation":{"ephemeral_5m_input_tokens":3}
@@ -1713,7 +1858,7 @@ mod tests {
         );
         assert!(!complete);
         assert_eq!(partial.cache_creation_total(), 10);
-        let (invalid_ttl, complete) = assistant_usage(
+        let (invalid_ttl, complete, _) = assistant_usage(
             &json!({
                 "input":1,"output":1,"cacheWrite":10,"cttl":{"ephemeral1h":-1}
             }),

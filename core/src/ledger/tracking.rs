@@ -900,6 +900,7 @@ mod tests {
             model: "model".into(),
             basis: "unattributed".into(),
             usage: Usage::default(),
+            cache_counters_complete: false,
             reported_usd: amount,
             estimated_usd: None,
             pricing_version: None,

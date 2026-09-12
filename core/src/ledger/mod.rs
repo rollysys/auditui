@@ -1,8 +1,10 @@
 //! Read-only, evidence-linked request and usage ledger.
 
 pub mod analysis;
+mod cache_discontinuity;
 pub mod explain;
 pub mod parse;
+mod script_generation;
 pub mod source;
 pub mod tracking;
 
@@ -45,6 +47,10 @@ pub struct UsageObservation {
     pub model: String,
     pub basis: String,
     pub usage: Usage,
+    /// All input/cache categories were explicit and valid in request-level usage.
+    /// Missing counters and cumulative deltas never imply a zero cache hit rate.
+    #[serde(default)]
+    pub cache_counters_complete: bool,
     pub reported_usd: Option<f64>,
     pub estimated_usd: Option<f64>,
     pub pricing_version: Option<String>,
@@ -61,6 +67,18 @@ pub struct LlmRequest {
     pub source: SourceRef,
 }
 
+/// Safe script descriptors derived while parsing; no source bodies are retained.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ScriptMetadata {
+    pub kind: String,
+    pub target_fingerprint: String,
+    pub code_fingerprint: String,
+    pub bytes: u64,
+    pub lines: u64,
+    /// Sorted nonblank-line hashes; empty when the bounded sketch is unavailable.
+    pub line_fingerprints: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ToolExecution {
     pub id: String,
@@ -71,6 +89,8 @@ pub struct ToolExecution {
     pub operation: String,
     pub object: Option<String>,
     pub args_fingerprint: String,
+    #[serde(default)]
+    pub script: Option<ScriptMetadata>,
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
     pub status: String,

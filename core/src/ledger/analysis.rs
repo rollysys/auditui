@@ -13,10 +13,10 @@ use super::{
 use crate::providers::Agent;
 
 const EVIDENCE_LIMIT: usize = 32;
-const ANALYSIS_VERSION: &str = "ledger-candidates-v1";
+const ANALYSIS_VERSION: &str = "ledger-candidates-v2";
 
-/// Find observed retry-recovery, input/cache growth and recurring workflow
-/// fragments. Neither a finding nor its associated spend is claimed avoidable.
+/// Find observed recovery, repeated script generation, cache discontinuities,
+/// context growth and workflows. Related spend is never claimed avoidable.
 pub fn candidates(ledger: &Ledger, query: &Query) -> Vec<Candidate> {
     let index = Index::new(ledger, query);
     let mut found = Vec::new();
@@ -51,17 +51,23 @@ pub fn candidates(ledger: &Ledger, query: &Query) -> Vec<Candidate> {
         }
     }
     repeated_sequences(&index, sequences, &mut found);
-    // This is a mixed reported/estimated spend ordering, not severity, an
-    // invoice total, or a ranking of savings. Unknown amounts remain unknown.
+    found.extend(super::script_generation::detect(ledger, query));
+    found.extend(super::cache_discontinuity::detect(ledger, query));
+    // Put specific actionable evidence before ordinary context growth. Within
+    // each tier, mixed reported/estimated spend is a display ordering only,
+    // not severity, an invoice total, or a ranking of savings.
     found.sort_by(|a, b| {
         let a_cost = a.related_cost.reported_usd + a.related_cost.estimated_usd;
         let b_cost = b.related_cost.reported_usd + b.related_cost.estimated_usd;
-        b_cost.total_cmp(&a_cost).then_with(|| a.id.cmp(&b.id))
+        (a.kind == "context_growth")
+            .cmp(&(b.kind == "context_growth"))
+            .then_with(|| b_cost.total_cmp(&a_cost))
+            .then_with(|| a.id.cmp(&b.id))
     });
     found
 }
 
-struct Index<'a> {
+pub(super) struct Index<'a> {
     ledger: &'a Ledger,
     query: &'a Query,
     sessions: HashMap<&'a str, &'a Session>,
@@ -69,11 +75,11 @@ struct Index<'a> {
     observations: HashMap<(&'a str, &'a str), Vec<&'a UsageObservation>>,
     session_observations: HashMap<&'a str, Vec<&'a UsageObservation>>,
     contexts: HashMap<&'a str, Vec<&'a ContextEvent>>,
-    tools: HashMap<&'a str, Vec<&'a ToolExecution>>,
+    pub(super) tools: HashMap<&'a str, Vec<&'a ToolExecution>>,
 }
 
 impl<'a> Index<'a> {
-    fn new(ledger: &'a Ledger, query: &'a Query) -> Self {
+    pub(super) fn new(ledger: &'a Ledger, query: &'a Query) -> Self {
         let mut observations = HashMap::<_, Vec<_>>::new();
         let mut session_observations = HashMap::<_, Vec<_>>::new();
         for observation in &ledger.observations {
@@ -118,13 +124,13 @@ impl<'a> Index<'a> {
         }
     }
 
-    fn request(&self, tool: &ToolExecution) -> Option<&'a LlmRequest> {
+    pub(super) fn request(&self, tool: &ToolExecution) -> Option<&'a LlmRequest> {
         self.requests
             .get(&(tool.session_id.as_str(), tool.request_id.as_deref()?))
             .copied()
     }
 
-    fn tool_in_window(&self, tool: &ToolExecution) -> bool {
+    pub(super) fn tool_in_window(&self, tool: &ToolExecution) -> bool {
         in_window(
             tool.start_ms
                 .or_else(|| self.request(tool).and_then(|r| r.ts_ms)),
@@ -136,7 +142,7 @@ impl<'a> Index<'a> {
         tool.result.is_some() && in_window(tool.end_ms, self.query)
     }
 
-    fn linked<'b>(
+    pub(super) fn linked<'b>(
         &self,
         tools: &[&'b ToolExecution],
         direct: &[&'b UsageObservation],
@@ -218,13 +224,13 @@ impl<'a> Index<'a> {
     }
 }
 
-fn selected(session: &Session, query: &Query) -> bool {
+pub(super) fn selected(session: &Session, query: &Query) -> bool {
     matches!(session.provider, Agent::Claude | Agent::Codex | Agent::Omp)
         && query.project.as_ref().is_none_or(|p| p == &session.project)
         && (query.agents.is_empty() || query.agents.contains(&session.provider))
 }
 
-fn in_window(ts: Option<i64>, query: &Query) -> bool {
+pub(super) fn in_window(ts: Option<i64>, query: &Query) -> bool {
     match ts {
         Some(ts) => {
             query.since_ms.is_none_or(|since| ts >= since)
@@ -234,7 +240,7 @@ fn in_window(ts: Option<i64>, query: &Query) -> bool {
     }
 }
 
-fn source_key(source: &SourceRef) -> (&str, &str, u64, Option<&str>) {
+pub(super) fn source_key(source: &SourceRef) -> (&str, &str, u64, Option<&str>) {
     (
         &source.source_id,
         &source.version,
@@ -243,7 +249,7 @@ fn source_key(source: &SourceRef) -> (&str, &str, u64, Option<&str>) {
     )
 }
 
-fn before(a: &SourceRef, a_ms: Option<i64>, b: &SourceRef, b_ms: Option<i64>) -> bool {
+pub(super) fn before(a: &SourceRef, a_ms: Option<i64>, b: &SourceRef, b_ms: Option<i64>) -> bool {
     if a.source_id == b.source_id && a.version == b.version {
         a.line < b.line
     } else {
@@ -251,7 +257,7 @@ fn before(a: &SourceRef, a_ms: Option<i64>, b: &SourceRef, b_ms: Option<i64>) ->
     }
 }
 
-fn result_before_call(first: &ToolExecution, second: &ToolExecution) -> bool {
+pub(super) fn result_before_call(first: &ToolExecution, second: &ToolExecution) -> bool {
     first.batch_id != second.batch_id
         && first
             .result
@@ -662,7 +668,11 @@ fn repeated_sequences<'a>(
     }
 }
 
-fn finish(query: &Query, mut candidate: Candidate, mut evidence: Vec<&SourceRef>) -> Candidate {
+pub(super) fn finish(
+    query: &Query,
+    mut candidate: Candidate,
+    mut evidence: Vec<&SourceRef>,
+) -> Candidate {
     evidence.sort_by_key(|source| source_key(source));
     evidence.dedup_by(|a, b| source_key(a) == source_key(b));
     let mut agents = if query.agents.is_empty() {

@@ -172,9 +172,44 @@ Repeated diagnostics with the same code/message are grouped with an occurrence
 count and the first source reference; the underlying ledger diagnostics remain
 intact. The displayed diagnostic count is therefore not a raw occurrence count.
 Zero detected diagnostics does not prove complete billing. Candidates separate
-observed recovery chains, context growth, and repeated multi-operation workflows
-from hypotheses. Their related request cost is **not avoidable cost or a savings
-claim**, and a tool batch is not an LLM request.
+observed recovery chains, repeated script generation/full rewrites, cache-reuse
+discontinuities, context growth, and repeated multi-operation workflows from
+hypotheses. Their related request cost is **not avoidable cost or a savings claim**,
+and a tool batch is not an LLM request. Specific findings appear before ordinary
+context-growth candidates; this ordering is not a savings ranking.
+
+**Script and cache candidates.** These detectors run in the same `candidates`,
+`browse`, and optional `explain` paths:
+
+- `repeated_script_generation` finds exactly repeated recognized full script
+  writes or multiline inline bodies; `mostly_unchanged_script_rewrite` finds
+  full writes to the same resolved target with at least 90% identical nonblank
+  line multiset overlap and at least 90% byte-size agreement. Bodies must have
+  at least 1,024 UTF-8 bytes and 16 nonblank lines. Comparison is within one
+  session/source version with ordered tool-result evidence, not between parallel
+  calls. Partial edits are not full rewrites. Near-match sketches are bounded to
+  512 nonblank lines; larger bodies can still match exactly.
+  Only fingerprints and size/line counts are retained, never script bodies.
+  Bytes are **not tokens**; the original baseline is evidence, not repeated-work
+  cost. Related cost covers whole explicitly linked repeated requests, not the
+  marginal cost of emitting the code.
+- `cache_reuse_discontinuity` requires adjacent same-model request observations
+  with explicit, valid input/cache categories: cache-read share falls by at least
+  30 percentage points, cache-read tokens fall by at least 4,096, and uncached
+  input plus cache-write tokens rise by at least 4,096. Write growth can support
+  a rebuild hypothesis, not prove its cause. Missing counters are not zero hits;
+  unknown usage/model transitions break comparisons. Current Codex cumulative
+  deltas do not qualify. A merely shorter, cheaper context is not a cache-loss
+  candidate. Money changes compare reported amounts with reported amounts, or
+  same-pricing-version estimates with estimates; otherwise the change is unknown.
+
+For example, inspect only the new evidence-linked findings:
+
+```bash
+auditui audit candidates --root ./transcripts --since all --json |
+  jq '.candidates[] | select(.kind == "repeated_script_generation" or .kind == "mostly_unchanged_script_rewrite" or .kind == "cache_reuse_discontinuity")'
+auditui audit browse --root ./transcripts --since all
+```
 
 **Supported sources and scan behavior.** The ledger reads Claude JSONL under
 `~/.claude/projects`, Codex JSONL under `~/.codex/sessions`, and oh-my-pi JSONL under

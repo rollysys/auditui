@@ -19,7 +19,7 @@ use super::{fingerprint, parse, redact, Diagnostic, Ledger, Query, SourceRef};
 use crate::providers::Agent;
 
 // Bump whenever parser semantics or serialized ledger fields change.
-const PARSED_CACHE_VERSION: u32 = 3;
+const PARSED_CACHE_VERSION: u32 = 4;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

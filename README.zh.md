@@ -158,8 +158,34 @@ compare 支持 root/project/agent 筛选，但**拒绝 `--since`/`--until`**：
 缺时间戳、解析失败、未支持格式和归属不明等局限；没有诊断不保证账单完整。
 相同 code/message 的重复诊断合并显示出现次数和第一个源引用，底层账本诊断保持完整；
 因此显示的诊断条目数不等于原始发生次数。
-候选将已观察到的恢复链、上下文增长、跨会话多操作序列与假设分开。
-候选关联请求成本**不是可避免成本，更不是预计节省**；一个工具批次也不是一次 LLM 请求。
+候选将已观察到的恢复链、脚本重复生成/整段重写、缓存复用断层、上下文增长、
+跨会话多操作序列与假设分开。候选关联请求成本**不是可避免成本，更不是预计节省**；
+一个工具批次也不是一次 LLM 请求。具体候选排在普通上下文增长前，不代表节省排名。
+
+**脚本与缓存候选。** 两类检测直接用于 `candidates`、`browse` 和可选 `explain`：
+
+- `repeated_script_generation` 检测识别出的完整脚本写入或多行内联代码完全重复；
+  `mostly_unchanged_script_rewrite` 检测同一解析目标文件的整段写入，要求非空行多重集
+  至少 90% 完全相同、字节体量相似度至少 90%。正文须同时达到 1,024 UTF-8 字节和
+  16 个非空行。只比较同一会话/源版本内有工具结果先后证据的调用，不把并行调用
+  强排成序列；局部 edit 不算整段重写。近似匹配限于 512 个非空行以内，更长正文
+  仍可做完全相同匹配。账本只保留指纹和字节/行数，**不保留代码正文，字节不等于
+  token**。最初基线只作证据，不算重复工作成本；关联成本是重复调用明确对应的
+  整次请求成本，不是生成这些代码的边际成本。
+- `cache_reuse_discontinuity` 要求相邻同模型请求有显式有效的输入/缓存分类计数：
+  缓存读占比至少下降 30 个百分点、缓存读至少减少 4,096 token，且未缓存输入加缓存写
+  至少增加 4,096 token。缓存写增长可支持“重建”假设，但不能证明原因。缺失计数
+  不当作零命中，usage 缺失或模型切换会阻断比较；当前 Codex 累计差分不参与此检测。
+  仅仅上下文变短、请求变便宜不报缓存损失。金额变化只在实际报告对实际报告、
+  或同一定价版本估算对估算之间比较，否则变化未知。
+
+例如，仅查看新增候选及其证据：
+
+```bash
+auditui audit candidates --root ./transcripts --since all --json |
+  jq '.candidates[] | select(.kind == "repeated_script_generation" or .kind == "mostly_unchanged_script_rewrite" or .kind == "cache_reuse_discontinuity")'
+auditui audit browse --root ./transcripts --since all
+```
 
 **支持路径与扫描方式。** 审计支持 `~/.claude/projects` 下 Claude JSONL、
 `~/.codex/sessions` 下 Codex JSONL、`~/.omp/agent/sessions` 下 oh-my-pi JSONL，
