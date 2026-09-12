@@ -97,6 +97,21 @@ cargo build --release
 cp target/release/auditui ~/.local/bin/
 ```
 
+### 远程部署与 Windows 前提
+
+`make deploy-xserver` 先在本机编译，再通过 SSH 复制工作区构建输入，
+在远端执行 release 编译和 `--dry-run`。可设置 `REMOTE`、
+`REMOTE_PLATFORM=auto|windows|posix`、`REMOTE_DIR` 和可选的 `REMOTE_CARGO`
+（可执行文件路径，不是 shell 命令）；不复制用户 transcript。
+
+Windows 原生编译除了 Rust，还需要 **Visual Studio C++ Build Tools 和 Windows SDK**，
+包括可用的 MSVC `link.exe`。已实际执行 xserver 原生 Windows 部署路径，但该机缺少
+`link.exe`：这是主机前提缺失，不能算原生编译成功，也不是源代码编译错误。
+第二台主机验证已在同一 xserver 的 Ubuntu 22.04 WSL 通过，使用隔离的官方 Rust 1.98.1
+及离线 vendor 依赖：工作区测试、release 编译和真实审计 CLI 冒烟均通过。
+冒烟覆盖 31 次请求报告成本 $0.31、并行失败不产生恢复候选、真正恢复链产生候选。
+这套 WSL 环境单独准备，部署脚本**不会自动配置或执行 WSL**。
+
 ## 用法
 
 ```bash
@@ -141,6 +156,8 @@ compare 支持 root/project/agent 筛选，但**拒绝 `--since`/`--until`**：
 **如何读结果。** 供应商实际报告金额、价格表估算金额、成本未知观测数分栏，
 不能把前两栏相加后叫“实际账单”，未知也不等于零。Coverage 会披露缺 usage、
 缺时间戳、解析失败、未支持格式和归属不明等局限；没有诊断不保证账单完整。
+相同 code/message 的重复诊断合并显示出现次数和第一个源引用，底层账本诊断保持完整；
+因此显示的诊断条目数不等于原始发生次数。
 候选将已观察到的恢复链、上下文增长、跨会话多操作序列与假设分开。
 候选关联请求成本**不是可避免成本，更不是预计节省**；一个工具批次也不是一次 LLM 请求。
 

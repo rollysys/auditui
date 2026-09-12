@@ -242,6 +242,7 @@ pub fn costs(ledger: &Ledger, query: &Query) -> CostReport {
                 message: "The inclusive start must precede the exclusive end.".into(),
                 source: None,
             });
+            report.coverage = summarize_coverage(report.coverage);
             return report;
         }
     }
@@ -365,7 +366,38 @@ pub fn costs(ledger: &Ledger, query: &Query) -> CostReport {
     report
         .rows
         .sort_by(|a, b| (&a.project, &a.session_id).cmp(&(&b.project, &b.session_id)));
+    report.coverage = summarize_coverage(report.coverage);
     report
+}
+
+/// Report coverage is bounded by distinct diagnostic kinds/messages, while the
+/// source ledger retains every original diagnostic and its exact evidence.
+fn summarize_coverage(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    let mut groups: BTreeMap<(String, String), (usize, Option<SourceRef>)> = BTreeMap::new();
+    for diagnostic in diagnostics {
+        let entry = groups
+            .entry((diagnostic.code, diagnostic.message))
+            .or_insert((0, diagnostic.source));
+        entry.0 += 1;
+    }
+    groups
+        .into_iter()
+        .map(|((code, mut message), (count, source))| {
+            if count > 1 {
+                use std::fmt::Write;
+                write!(
+                    message,
+                    " ({count} occurrences; source, when present, is the first sample only.)"
+                )
+                .expect("writing to a String cannot fail");
+            }
+            Diagnostic {
+                code,
+                message,
+                source,
+            }
+        })
+        .collect()
 }
 
 fn cost_row<'a, 's>(
@@ -678,5 +710,47 @@ mod tests {
             .collect();
         assert_eq!(missing.len(), 1);
         assert!(missing[0].message.starts_with("2 "));
+    }
+
+    #[test]
+    fn repeated_coverage_preserves_multiplicity_and_first_evidence() {
+        let first = SourceRef {
+            line: 7,
+            ..SourceRef::default()
+        };
+        let second = SourceRef {
+            line: 9,
+            ..SourceRef::default()
+        };
+        let ledger = Ledger {
+            diagnostics: vec![
+                Diagnostic {
+                    code: "unknown_pricing".into(),
+                    message: "No supported price.".into(),
+                    source: Some(first),
+                },
+                Diagnostic {
+                    code: "unknown_pricing".into(),
+                    message: "No supported price.".into(),
+                    source: Some(second),
+                },
+                Diagnostic {
+                    code: "missing_usage".into(),
+                    message: "Usage is absent.".into(),
+                    source: None,
+                },
+            ],
+            ..Ledger::default()
+        };
+        let report = costs(&ledger, &Query::default());
+        assert_eq!(report.coverage.len(), 2);
+        assert_eq!(report.coverage[0].code, "missing_usage");
+        let repeated = &report.coverage[1];
+        assert_eq!(repeated.code, "unknown_pricing");
+        assert!(repeated.message.contains("2 occurrences"));
+        assert!(repeated.message.contains("first sample only"));
+        assert_eq!(repeated.source.as_ref().unwrap().line, 7);
+        assert_eq!(ledger.diagnostics.len(), 3);
+        assert_eq!(ledger.diagnostics[1].source.as_ref().unwrap().line, 9);
     }
 }

@@ -102,6 +102,25 @@ Single ~5 MB static-ish binary; copy it anywhere:
 cp target/release/auditui ~/.local/bin/
 ```
 
+### Remote deployment and Windows prerequisites
+
+`make deploy-xserver` builds locally, copies workspace build inputs over SSH,
+then builds a release and runs `--dry-run` on the remote host. Set `REMOTE`,
+`REMOTE_PLATFORM=auto|windows|posix`, `REMOTE_DIR`, and optionally `REMOTE_CARGO`
+(an executable path, not a shell command). It does not copy user transcripts.
+
+Native Windows requires **Visual Studio C++ Build Tools and the Windows SDK**,
+including an available MSVC `link.exe`, in addition to Rust. The native Windows
+deployment path was exercised on xserver, but that host lacks `link.exe`; this
+is a host prerequisite failure, not a successful native build or a source-code
+build failure. The second-host validation passed on the same xserver in Ubuntu
+22.04 WSL with isolated official Rust 1.98.1 and offline vendored dependencies:
+workspace tests, release build, and actual audit CLI smoke checks all passed.
+The smoke checks covered 31 requests with $0.31 reported cost, no recovery
+candidate for a parallel failure, and a candidate for a genuine recovery chain.
+That WSL setup is separate: the deployment script does **not** automate WSL
+provisioning or execution.
+
 ## Usage
 
 ```bash
@@ -131,7 +150,7 @@ auditui audit record --file intervention.json
 auditui audit outcome --file outcome.json
 auditui audit compare --intervention reduce-recovery
 auditui audit browse --root ./transcripts --since all
-make audit ARGS=\"--since 7d --json\"
+make audit ARGS="--since 7d --json"
 ```
 
 Flags are strict: unknown/duplicate flags, missing values, unknown agents, and
@@ -149,6 +168,9 @@ it needs complete recorded task attempts, not a clipped cost window.
 and observations with unknown cost are separate buckets; actual and estimated
 amounts are never added and labeled an invoice. Coverage diagnostics show missing
 usage/timestamps, unsupported or malformed records, and attribution limitations.
+Repeated diagnostics with the same code/message are grouped with an occurrence
+count and the first source reference; the underlying ledger diagnostics remain
+intact. The displayed diagnostic count is therefore not a raw occurrence count.
 Zero detected diagnostics does not prove complete billing. Candidates separate
 observed recovery chains, context growth, and repeated multi-operation workflows
 from hypotheses. Their related request cost is **not avoidable cost or a savings
@@ -163,10 +185,10 @@ source file or tree instead of scanning default homes. A directory can contain
 
 ```json
 {
-  \"sources\": [
-    {\"path\": \"before/session.jsonl\", \"provider\": \"omp\", \"project\": \"demo\", \"task_id\": \"task-before\", \"work_type\": \"bugfix\"},
-    {\"path\": \"before/child.jsonl\", \"provider\": \"omp\", \"project\": \"demo\", \"parent\": \"before/session.jsonl\", \"task_id\": \"task-before\", \"work_type\": \"bugfix\"},
-    {\"path\": \"after/session.jsonl\", \"provider\": \"omp\", \"project\": \"demo\", \"task_id\": \"task-after\", \"work_type\": \"bugfix\"}
+  "sources": [
+    {"path": "before/session.jsonl", "provider": "omp", "project": "demo", "task_id": "task-before", "work_type": "bugfix"},
+    {"path": "before/child.jsonl", "provider": "omp", "project": "demo", "parent": "before/session.jsonl", "task_id": "task-before", "work_type": "bugfix"},
+    {"path": "after/session.jsonl", "provider": "omp", "project": "demo", "task_id": "task-after", "work_type": "bugfix"}
   ]
 }
 ```
@@ -202,14 +224,14 @@ requires config with the following exact fields:
 
 ```json
 {
-  \"endpoint\": \"http://127.0.0.1:8080/v1/chat/completions\",
-  \"model\": \"your-local-model\",
-  \"api_key_env\": \"AUDIT_EXPLAIN_API_KEY\",
-  \"max_cost_usd\": 0.05,
-  \"input_usd_per_million\": 1.0,
-  \"output_usd_per_million\": 2.0,
-  \"max_output_tokens\": 1000,
-  \"allow_remote\": false
+  "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+  "model": "your-local-model",
+  "api_key_env": "AUDIT_EXPLAIN_API_KEY",
+  "max_cost_usd": 0.05,
+  "input_usd_per_million": 1.0,
+  "output_usd_per_million": 2.0,
+  "max_output_tokens": 1000,
+  "allow_remote": false
 }
 ```
 
@@ -233,10 +255,10 @@ are refused, including resolved aliases; choose a separate private directory.
 
 ```json
 {
-  \"id\": \"reduce-recovery\", \"candidate_id\": \"ID_FROM_CANDIDATES\", \"project\": \"demo\",
-  \"work_type\": \"bugfix\", \"description\": \"Use a checked input contract\",
-  \"artifact\": \"commit or skill reference\", \"effective_ms\": 1788825600000,
-  \"status\": \"candidate\", \"quality_criteria\": \"Acceptance checks pass without regression\"
+  "id": "reduce-recovery", "candidate_id": "ID_FROM_CANDIDATES", "project": "demo",
+  "work_type": "bugfix", "description": "Use a checked input contract",
+  "artifact": "commit or skill reference", "effective_ms": 1788825600000,
+  "status": "candidate", "quality_criteria": "Acceptance checks pass without regression"
 }
 ```
 
@@ -248,9 +270,9 @@ comparison metadata:
 
 ```json
 {
-  \"task_id\": \"task-before\", \"session_ids\": [\"LEDGER_SESSION_ID\"], \"passed\": true,
-  \"quality_notes\": \"Acceptance checks passed\", \"model\": \"observed-model\",
-  \"harness_version\": \"harness-version\", \"project_version\": \"commit-id\", \"cohort\": \"before\"
+  "task_id": "task-before", "session_ids": ["LEDGER_SESSION_ID"], "passed": true,
+  "quality_notes": "Acceptance checks passed", "model": "observed-model",
+  "harness_version": "harness-version", "project_version": "commit-id", "cohort": "before"
 }
 ```
 
