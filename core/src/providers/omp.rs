@@ -443,6 +443,7 @@ fn join_text_parts(content: Option<&serde_json::Value>) -> String {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const FIXTURE: &str = r###"{"type":"session","version":3,"id":"019e0000-1111-7000-8000-000000000000","timestamp":"2026-05-23T10:38:08.095Z","cwd":"/tmp/demo","title":"t","titleSource":"auto"}
 {"type":"model_change","id":"m1","timestamp":"2026-05-23T10:38:09.000Z","model":"deepseek/deepseek-v4-pro"}
@@ -456,7 +457,12 @@ mod tests {
 "###;
 
     fn write_fixture() -> PathBuf {
-        let p = std::env::temp_dir().join(format!("omp_fixture_{}.jsonl", std::process::id()));
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "omp_fixture_{}_{}.jsonl",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let mut f = File::create(&p).unwrap();
         f.write_all(FIXTURE.as_bytes()).unwrap();
         p

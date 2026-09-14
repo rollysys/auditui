@@ -5,9 +5,10 @@
 
 **Terminal UI for browsing Claude Code / Codex / oh-my-pi / Qwen coding-agent session logs.**
 
-Read-only. No hooks. No daemon. No network. Parses the transcript files your agent
-already writes, indexes them in parallel, caches aggregations on disk, and gives you
-a single-binary TUI to look at what actually happened.
+Read-only transcript access. No hooks or daemon. Parses the transcript files your
+agent already writes and provides a single-binary TUI. Audit commands are offline
+by default; only an explicitly configured `audit explain --execute` can send a
+sanitized analysis payload. The ordinary TUI has an optional update check.
 
 ```
 ┌ Sessions (235 groups · 4534 / 4534) ──────────┐┌ 1ca3c5bd · claude-opus-4-7 · ~/auditit · [3of8 [ ]] ──┐
@@ -61,9 +62,9 @@ thousands of them, across dozens of repos, and no good way to:
 - Markdown rendered with color, bold, lists, code blocks, tables
 
 ### Non-goals
-- No editing. `auditui` will never write to `~/.claude/`, `~/.codex/`, `~/.qwen/`.
-- No sharing / multi-user. If you want a dashboard other people can see, this is not it.
-- No analytics upload. Nothing leaves your machine.
+- No transcript editing. `auditui` never writes agent transcript directories, including `~/.claude/`, `~/.codex/`, `~/.omp/`, and `~/.qwen/`.
+- No sharing / multi-user server. If you want a hosted dashboard, this is not it.
+- No automatic analytics upload. Audit analysis stays local unless you explicitly execute an explanation with a configured endpoint. Intervention/outcome records live in a separate user-selected state directory.
 
 ## Install
 
@@ -101,6 +102,25 @@ Single ~5 MB static-ish binary; copy it anywhere:
 cp target/release/auditui ~/.local/bin/
 ```
 
+### Remote deployment and Windows prerequisites
+
+`make deploy-xserver` builds locally, copies workspace build inputs over SSH,
+then builds a release and runs `--dry-run` on the remote host. Set `REMOTE`,
+`REMOTE_PLATFORM=auto|windows|posix`, `REMOTE_DIR`, and optionally `REMOTE_CARGO`
+(an executable path, not a shell command). It does not copy user transcripts.
+
+Native Windows requires **Visual Studio C++ Build Tools and the Windows SDK**,
+including an available MSVC `link.exe`, in addition to Rust. The native Windows
+deployment path was exercised on xserver, but that host lacks `link.exe`; this
+is a host prerequisite failure, not a successful native build or a source-code
+build failure. The second-host validation passed on the same xserver in Ubuntu
+22.04 WSL with isolated official Rust 1.98.1 and offline vendored dependencies:
+workspace tests, release build, and actual audit CLI smoke checks all passed.
+The smoke checks covered 31 requests with $0.31 reported cost, no recovery
+candidate for a parallel failure, and a candidate for a genuine recovery chain.
+That WSL setup is separate: the deployment script does **not** automate WSL
+provisioning or execution.
+
 ## Usage
 
 ```bash
@@ -112,6 +132,202 @@ auditui --memory-dump    # list memory + skills files found
 auditui --group-dump     # show session-grouping histogram
 auditui --check-update   # check GitHub for a newer release, print result
 ```
+
+### Audit ledger and improvement tracking
+
+`auditui audit` is separate from the ordinary Sessions/Dashboard TUI. The former
+`--audit` entry has been removed. It measures **LLM requests and usage observations**,
+not tool-call counts as a proxy for dollar cost:
+
+```bash
+auditui audit costs --since 7d
+auditui audit candidates --root ./transcripts --since all --json
+auditui audit costs --since 2026-09-01T00:00:00Z --until 2026-09-08T00:00:00Z
+auditui audit explain --root ./transcripts --since all          # offline preview
+auditui audit explain --root ./transcripts --config explain.json # preview + budget quote
+auditui audit explain --root ./transcripts --config explain.json --execute
+auditui audit record --file intervention.json
+auditui audit outcome --file outcome.json
+auditui audit compare --intervention reduce-recovery
+auditui audit browse --root ./transcripts --since all
+make audit ARGS="--since 7d --json"
+```
+
+Flags are strict: unknown/duplicate flags, missing values, unknown agents, and
+inverted or empty time windows fail rather than broaden the scan. Costs,
+candidates, explanation, and browse accept `--root`, `--since 7d|30d|all|RFC3339`
+(default `30d`), `--until RFC3339`, `--project PROJECT`, and
+`--agent claude,codex,omp`. Project selection is exact. The start is inclusive,
+the end exclusive, and selection uses **observation time**, not session modification
+time. Unknown timestamps are excluded from bounded totals and diagnosed; `all`
+retains them. Machine-readable commands accept `--json`; `browse` requires a terminal.
+`compare` accepts root/project/agent selection but **rejects `--since`/`--until`**:
+it needs complete recorded task attempts, not a clipped cost window.
+
+**How to read the result.** Provider-reported actual USD, table-estimated USD,
+and observations with unknown cost are separate buckets; actual and estimated
+amounts are never added and labeled an invoice. Coverage diagnostics show missing
+usage/timestamps, unsupported or malformed records, and attribution limitations.
+Repeated diagnostics with the same code/message are grouped with an occurrence
+count and the first source reference; the underlying ledger diagnostics remain
+intact. The displayed diagnostic count is therefore not a raw occurrence count.
+Zero detected diagnostics does not prove complete billing. Candidates separate
+observed recovery chains, repeated script generation/full rewrites, cache-reuse
+discontinuities, context growth, and repeated multi-operation workflows from
+hypotheses. Their related request cost is **not avoidable cost or a savings claim**,
+and a tool batch is not an LLM request. Specific findings appear before ordinary
+context-growth candidates; this ordering is not a savings ranking.
+
+**Script and cache candidates.** These detectors run in the same `candidates`,
+`browse`, and optional `explain` paths:
+
+- `repeated_script_generation` finds exactly repeated recognized full script
+  writes or multiline inline bodies; `mostly_unchanged_script_rewrite` finds
+  full writes to the same resolved target with at least 90% identical nonblank
+  line multiset overlap and at least 90% byte-size agreement. Bodies must have
+  at least 1,024 UTF-8 bytes and 16 nonblank lines. Comparison is within one
+  session/source version with ordered tool-result evidence, not between parallel
+  calls. Partial edits are not full rewrites. Near-match sketches are bounded to
+  512 nonblank lines; larger bodies can still match exactly.
+  Only fingerprints and size/line counts are retained, never script bodies.
+  Bytes are **not tokens**; the original baseline is evidence, not repeated-work
+  cost. Related cost covers whole explicitly linked repeated requests, not the
+  marginal cost of emitting the code.
+- `cache_reuse_discontinuity` requires adjacent same-model request observations
+  with explicit, valid input/cache categories: cache-read share falls by at least
+  30 percentage points, cache-read tokens fall by at least 4,096, and uncached
+  input plus cache-write tokens rise by at least 4,096. Write growth can support
+  a rebuild hypothesis, not prove its cause. Missing counters are not zero hits;
+  unknown usage/model transitions break comparisons. Current Codex cumulative
+  deltas do not qualify. A merely shorter, cheaper context is not a cache-loss
+  candidate. Money changes compare reported amounts with reported amounts, or
+  same-pricing-version estimates with estimates; otherwise the change is unknown.
+
+For example, inspect only the new evidence-linked findings:
+
+```bash
+auditui audit candidates --root ./transcripts --since all --json |
+  jq '.candidates[] | select(.kind == "repeated_script_generation" or .kind == "mostly_unchanged_script_rewrite" or .kind == "cache_reuse_discontinuity")'
+auditui audit browse --root ./transcripts --since all
+```
+
+**Supported sources and scan behavior.** The ledger reads Claude JSONL under
+`~/.claude/projects`, Codex JSONL under `~/.codex/sessions`, and oh-my-pi JSONL under
+`~/.omp/agent/sessions`, including nested children. Qwen/Hermes remain available
+in the ordinary viewer but are not ledger providers. `--root` selects a local
+source file or tree instead of scanning default homes. A directory can contain
+`manifest.json` to enumerate sources and explicitly supply project/task metadata:
+
+```json
+{
+  "sources": [
+    {"path": "before/session.jsonl", "provider": "omp", "project": "demo", "task_id": "task-before", "work_type": "bugfix"},
+    {"path": "before/child.jsonl", "provider": "omp", "project": "demo", "parent": "before/session.jsonl", "task_id": "task-before", "work_type": "bugfix"},
+    {"path": "after/session.jsonl", "provider": "omp", "project": "demo", "task_id": "task-after", "work_type": "bugfix"}
+  ]
+}
+```
+
+Manifest paths are relative to the root; escaping it is rejected. Audit performs
+a **full source-content scan on each invocation or browse refresh**, with a
+SHA-256-validated parsed-ledger cache separate from the ordinary timeline cache.
+This is not byte-offset incremental indexing. Evidence references contain the
+whole-file SHA-256 version; changed files, including same-size changes, must be
+rescanned before evidence can be opened.
+
+**Local evidence and privacy.** JSON exports redact credentials and local paths
+by default, and never persist tool argument bodies or raw transcript code.
+To save an executable local evidence reference, opt in to sensitive path export:
+
+```bash
+auditui audit candidates --root ./transcripts --since all --json --include-paths > local-candidates.json
+jq '.candidates[0].evidence[0]' local-candidates.json > source-ref.json
+auditui audit evidence --file source-ref.json          # sanitized, version checked
+auditui audit evidence --file source-ref.json --raw    # explicit local raw record
+```
+
+Use a real nonempty candidate/evidence entry. `--include-paths` is available only
+on costs/candidates/compare and exposes sensitive filesystem paths; treat those
+exports as local private files. It never enables raw bodies or changes the
+explanation payload. `--raw` applies only to local evidence viewing. Do not share
+raw evidence or assume heuristic redaction makes every user-written secret safe.
+
+**Optional explanation.** Without `--execute`, explanation prints a sanitized
+preview and does not read API credentials or make a model request. Optional
+`--config PATH` adds endpoint/model/budget validation to the preview. Execution
+requires config with the following exact fields:
+
+```json
+{
+  "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+  "model": "your-local-model",
+  "api_key_env": "AUDIT_EXPLAIN_API_KEY",
+  "max_cost_usd": 0.05,
+  "input_usd_per_million": 1.0,
+  "output_usd_per_million": 2.0,
+  "max_output_tokens": 1000,
+  "allow_remote": false
+}
+```
+
+Replace the example model and prices with your endpoint's real configuration;
+store the key in the named environment variable, never in the JSON. Remote
+endpoints require HTTPS and `allow_remote: true` as well as `--execute`. The model
+receives sanitized candidate facts and evidence IDs, **not raw source records**;
+it cannot execute tools. A conservative input-byte/output-token budget gate runs
+before the request. Provider analysis usage/cost and explanation cache are stored
+separately from the work ledger. Missing analysis usage is unknown, not free.
+Audit commands never trigger the ordinary TUI update checker.
+Model prose is an **unverified interpretation**, not ledger truth: schema and
+evidence citations are checked, but recommendations and factual prose still need
+human review. Never use model-written numbers as measured cost or causal savings.
+
+**Durable PDCA records.** Explain/compare/record/outcome/browse accept
+`--state-dir PATH` (default `~/.claude-audit/ledger-state`), separate from the
+disposable TUI cache. State paths inside source roots or agent data directories
+are refused, including resolved aliases; choose a separate private directory.
+`record` and `outcome` import one JSON object each. An intervention has:
+
+```json
+{
+  "id": "reduce-recovery", "candidate_id": "ID_FROM_CANDIDATES", "project": "demo",
+  "work_type": "bugfix", "description": "Use a checked input contract",
+  "artifact": "commit or skill reference", "effective_ms": 1788825600000,
+  "status": "candidate", "quality_criteria": "Acceptance checks pass without regression"
+}
+```
+
+Statuses are `candidate`, `confirmed`, `implemented`, `pending_validation`,
+`effective`, `ineffective`, and `insufficient_evidence`; the tracker validates
+transitions. An outcome records an explicit logical task, **all of its session
+attempts including failures and children**, externally checked quality, and
+comparison metadata:
+
+```json
+{
+  "task_id": "task-before", "session_ids": ["LEDGER_SESSION_ID"], "passed": true,
+  "quality_notes": "Acceptance checks passed", "model": "observed-model",
+  "harness_version": "harness-version", "project_version": "commit-id", "cohort": "before"
+}
+```
+
+Import corresponding `after` tasks as separate outcomes. Use actual ledger
+session IDs from cost JSON, not filenames; manifest task/work-type metadata is
+explicit, not guessed from user turns or final assistant prose. Comparison
+reports before/after samples, distribution, failed attempts and total cohort
+cost per completed task with quality/comparability gates and confounders.
+Missing or incomparable evidence yields `insufficient_evidence`, not fabricated
+causal savings. Source filters that omit required sessions cannot establish a
+complete task comparison.
+
+**Audit browse controls.** `Tab` / `Left` / `Right` select Costs, Candidates, or
+Effects; `Up`/`Down` or `j`/`k` select a row (`Home`/`End` jump). `Enter` or `e`
+opens version-checked sanitized evidence, `[`/`]` change the evidence reference,
+and uppercase `R` explicitly reveals its raw local record. `Esc` returns;
+`PgUp`/`PgDn` scroll details, and `j`/`k` scroll an open evidence view. `r` does a
+full rescan; `q`/`Ctrl-C` exits. Effects use complete task history in the selected
+root/project/agent, independently of the Costs/Candidates time window. The
+ordinary TUI and its shortcuts below are unchanged.
 
 ### Update check
 
@@ -154,8 +370,15 @@ On startup the TUI spawns a background worker that hits GitHub's `releases/lates
 
 ## Cache
 
-`auditui` caches per-session timelines on disk at `~/.claude-audit/_tui_cache/<agent>/<sid>.bin`.
-Keyed by file size; changes are detected automatically. Delete the directory to force a rebuild.
+The ordinary Sessions/Dashboard viewer caches per-session timelines on disk at
+`~/.claude-audit/_tui_cache/<agent>/<sid>.bin`, keyed by file size.
+The audit ledger instead reads complete source contents and validates its parsed
+cache under `~/.claude-audit/_tui_cache/ledger` by SHA-256 before reuse; same-size
+edits cannot reuse a stale version. This is not byte-offset incremental indexing.
+Disposable caches can be removed to force reparsing. They contain local source
+identities/paths and should be treated as private files, not shareable exports.
+Durable interventions/outcomes and explanation spend/cache live under
+`--state-dir`; clearing `_tui_cache` does not erase them.
 
 ## Status
 

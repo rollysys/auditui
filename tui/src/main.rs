@@ -1,5 +1,6 @@
 pub use auditui_core::{cache, cost, dashboard, memory, providers, session, skills};
 
+mod audit;
 mod md;
 mod tui;
 mod update;
@@ -11,6 +12,7 @@ auditui — local TUI viewer for Claude Code / Codex / oh-my-pi / Qwen session t
 
 USAGE:
     auditui [OPTIONS]
+    auditui audit <COMMAND> [OPTIONS]
 
 OPTIONS:
     -h, --help             Print help and exit
@@ -22,12 +24,20 @@ OPTIONS:
         --group-dump       Print session-grouping histogram and exit
         --memory-dump      Print memory + skills index and exit
         --md-dump <PATH>   Render a Markdown file through the parser and exit
+    audit <COMMAND>        Cost ledger, evidence candidates, and intervention tracking
+                           Run `auditui audit --help` for commands and strict flags
 
 With no options, launches the interactive TUI.
 ";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "audit") {
+        return audit::run(&args[2..]);
+    }
+    if args.iter().any(|arg| arg == "--audit") {
+        anyhow::bail!("--audit was removed; use `auditui audit costs` or `auditui audit candidates`");
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{HELP_TEXT}");
         return Ok(());
@@ -213,3 +223,4 @@ fn bench() -> Result<()> {
     }
     Ok(())
 }
+

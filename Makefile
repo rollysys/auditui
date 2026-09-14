@@ -6,7 +6,7 @@ BIN := target/release/auditui
 
 .DEFAULT_GOAL := release
 
-.PHONY: release run dry-run bench group-dump memory-dump md-dump clean deploy-xserver
+.PHONY: release run dry-run bench group-dump memory-dump md-dump audit clean deploy-xserver
 
 release:
 	$(CARGO) build --release
@@ -29,6 +29,9 @@ memory-dump: release
 md-dump: release
 	@[ -n "$(FILE)" ] || { echo "usage: make md-dump FILE=<path>"; exit 1; }
 	./$(BIN) --md-dump "$(FILE)"
+
+audit: release
+	./$(BIN) audit costs $(ARGS)
 
 deploy-xserver: release
 	./deploy-xserver.sh

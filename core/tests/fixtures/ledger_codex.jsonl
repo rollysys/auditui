@@ -1,0 +1,14 @@
+{"type":"session_meta","timestamp":"2026-05-23T10:00:00Z","payload":{"id":"shared-provider-session","cwd":"/workspace/demo"}}
+{"type":"turn_context","timestamp":"2026-05-23T10:00:00Z","payload":{"model":"gpt-5","cwd":"/workspace/demo"}}
+{"type":"event_msg","timestamp":"2026-05-23T10:00:01Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":10},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20}}}}
+{"type":"event_msg","timestamp":"2026-05-23T10:00:02Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20}}}}
+{"type":"response_item","timestamp":"2026-05-23T10:00:03Z","payload":{"type":"function_call","call_id":"parallel-a","name":"exec_command","arguments":"{\"cmd\":\"python -c 'print(1)'\",\"workdir\":\"/workspace/demo\"}"}}
+{"type":"response_item","timestamp":"2026-05-23T10:00:03Z","payload":{"type":"function_call","call_id":"parallel-b","name":"exec_command","arguments":"{\"cmd\":\"python -c 'print(2)'\",\"workdir\":\"/workspace/demo\"}"}}
+{"type":"response_item","timestamp":"2026-05-23T10:00:04Z","payload":{"type":"function_call_output","call_id":"parallel-a","output":"Chunk ID: a\nWall time: 0.1 seconds\nProcess exited with code 1\nOutput:\nfailed"}}
+{"type":"response_item","timestamp":"2026-05-23T10:00:04Z","payload":{"type":"function_call_output","call_id":"parallel-b","output":"Chunk ID: b\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\nError: a sample\nProcess exited with code 7"}}
+{"type":"event_msg","timestamp":"2026-05-23T10:00:05Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":50,"output_tokens":25}}}}
+{"type":"event_msg","timestamp":"2026-05-23T10:00:06Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":5,"output_tokens":4}}}}
+{"type":"event_msg","timestamp":"2026-05-23T10:00:07Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"output_tokens":900}}}}
+{"type":"event_msg","timestamp":"2026-05-23T10:00:08Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"cached_input_tokens":7,"output_tokens":6}}}}
+{"type":"response_item","timestamp":"2026-05-23T10:00:09Z","payload":{"type":"function_call","call_id":"later-a","name":"exec_command","arguments":"{\"cmd\":\"python -c 'print(1)'\",\"workdir\":\"/workspace/demo\"}"}}
+{"type":"response_item","timestamp":"2026-05-23T10:00:10Z","payload":{"type":"function_call_output","call_id":"later-a","output":"{\"output\":\"Error: demonstration\",\"metadata\":{\"exit_code\":0}}"}}
